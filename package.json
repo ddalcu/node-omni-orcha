@@ -1,0 +1,50 @@
+{
+  "name": "node-omni-orcha",
+  "version": "0.1.0",
+  "description": "Unified native Node.js bindings for llama.cpp, whisper.cpp, TTS.cpp, and stable-diffusion.cpp",
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "engines": {
+    "node": ">=25.0.0"
+  },
+  "scripts": {
+    "build": "cmake-js compile --CDGPU_BACKEND=auto",
+    "build:metal": "cmake-js compile --CDGPU_BACKEND=metal",
+    "build:cuda": "cmake-js compile --CDGPU_BACKEND=cuda",
+    "build:cpu": "cmake-js compile --CDGPU_BACKEND=cpu",
+    "rebuild": "cmake-js rebuild",
+    "clean": "cmake-js clean",
+    "test": "node --test test/*.test.ts",
+    "test:llm": "node --test test/llm.test.ts",
+    "test:unit": "node --test test/model-detector.test.ts test/gguf-reader.test.ts",
+    "test:samuel": "node scripts/samuel-jackson-test.ts"
+  },
+  "dependencies": {
+    "node-addon-api": "^8.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.0",
+    "cmake-js": "^7.3.0",
+    "typescript": "^5.8.0"
+  },
+  "files": [
+    "src/",
+    "cpp/",
+    "deps/",
+    "CMakeLists.txt",
+    "prebuilds/"
+  ],
+  "keywords": [
+    "llm", "tts", "stt", "whisper", "llama", "stable-diffusion", "flux",
+    "kokoro", "qwen", "voice-cloning", "speech-to-text", "text-to-speech",
+    "image-generation", "ggml", "gguf", "native", "n-api", "metal", "cuda"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nickvdyck/node-omni-orcha"
+  }
+}

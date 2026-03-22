@@ -1,0 +1,16 @@
+[submodule "deps/llama.cpp"]
+	path = deps/llama.cpp
+	url = https://github.com/ddalcu/llama.cpp.git
+[submodule "deps/stable-diffusion.cpp"]
+	path = deps/stable-diffusion.cpp
+	url = https://github.com/ddalcu/stable-diffusion.cpp.git
+[submodule "deps/whisper.cpp"]
+	path = deps/whisper.cpp
+	url = https://github.com/ggml-org/whisper.cpp.git
+[submodule "deps/TTS.cpp"]
+	path = deps/TTS.cpp
+	url = https://github.com/mmwillet/TTS.cpp.git
+	ignore = untracked
+[submodule "deps/qwen3-tts.cpp"]
+	path = deps/qwen3-tts.cpp
+	url = https://github.com/predict-woo/qwen3-tts.cpp.git

@@ -1,0 +1,34 @@
+node_modules/
+build/
+prebuilds/
+
+# Test model files (large, downloaded via scripts/)
+test/fixtures/*.gguf
+test/fixtures/*.safetensors
+test/fixtures/*.wav
+test/fixtures/*.pcm
+test/fixtures/*.bin
+test/fixtures/*.png
+test/fixtures/*.mp3
+
+# Integration test output
+test-output/
+
+# Python (used by model conversion scripts)
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# OS files
+.DS_Store
+*.log
+
+# IDE / clangd
+.cache/
+compile_commands.json
+.clangd/
+
+# Scratch / debug files
+test-tts-native.cpp
+videogen.md

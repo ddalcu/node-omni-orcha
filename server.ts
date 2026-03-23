@@ -15,11 +15,48 @@ const IMAGE_PATH = process.env.IMAGE_MODEL ?? `${IMAGE_DIR}/flux-2-klein-4b-Q4_K
 const IMAGE_VAE_PATH = process.env.IMAGE_VAE ?? `${IMAGE_DIR}/flux2-vae.safetensors`;
 const IMAGE_LLM_PATH = process.env.IMAGE_LLM ?? `${IMAGE_DIR}/Qwen3-4B-Q4_K_M.gguf`;
 
-// WAN 2.2 5B (video generation)
-const VIDEO_DIR = `${MODELS_DIR}/wan22-5b`;
-const VIDEO_PATH = process.env.VIDEO_MODEL ?? `${VIDEO_DIR}/Wan2.2-TI2V-5B-Q4_K_M.gguf`;
-const VIDEO_VAE_PATH = process.env.VIDEO_VAE ?? `${VIDEO_DIR}/Wan2.2_VAE.safetensors`;
-const VIDEO_T5XXL_PATH = process.env.VIDEO_T5XXL ?? `${VIDEO_DIR}/umt5-xxl-encoder-Q8_0.gguf`;
+// WAN video generation — locked to 480p presets
+const VIDEO_RESOLUTIONS: Record<string, [number, number]> = {
+  '16:9': [832, 480],
+  '9:16': [480, 832],
+  '1:1':  [624, 624],
+};
+
+const WAN_NEGATIVE_PROMPT = '色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走';
+
+type VideoVariant = '5b' | 'turbo-a14b';
+
+interface VideoVariantConfig {
+  label: string;
+  dir: string;
+  model: string;
+  vae: string;
+  t5xxl: string;
+  highNoiseModel?: string;
+  defaults: { steps: number; cfgScale: number; flowShift: number };
+  highNoiseDefaults?: { steps: number; cfgScale: number; sampleMethod: string };
+}
+
+const VIDEO_VARIANTS: Record<VideoVariant, VideoVariantConfig> = {
+  '5b': {
+    label: 'WAN 2.2 TI2V 5B',
+    dir: `${MODELS_DIR}/wan22-5b`,
+    model: 'Wan2.2-TI2V-5B-Q8_0.gguf',
+    vae: 'Wan2.2_VAE.safetensors',
+    t5xxl: 'umt5-xxl-encoder-Q8_0.gguf',
+    defaults: { steps: 30, cfgScale: 6.0, flowShift: 3.0 },
+  },
+  'turbo-a14b': {
+    label: 'WAN 2.2 T2V A14B',
+    dir: `${MODELS_DIR}/wan22-turbo`,
+    model: 'Wan2.2-T2V-A14B-LowNoise-Q8_0.gguf',
+    highNoiseModel: 'Wan2.2-T2V-A14B-HighNoise-Q8_0.gguf',
+    vae: 'Wan2.1_VAE.safetensors',
+    t5xxl: 'umt5-xxl-encoder-Q8_0.gguf',
+    defaults: { steps: 10, cfgScale: 3.5, flowShift: 3.0 },
+    highNoiseDefaults: { steps: 8, cfgScale: 3.5, sampleMethod: 'euler' },
+  },
+};
 
 // --- Model state ---
 const models: {
@@ -29,7 +66,8 @@ const models: {
   video: ImageModel | null;
 } = { llm: null, tts: null, image: null, video: null };
 
-// Track loading state to prevent duplicate loads
+let videoVariant: VideoVariant | null = null;
+
 const loading: Record<string, Promise<void> | null> = {
   llm: null, tts: null, image: null, video: null,
 };
@@ -104,22 +142,35 @@ function loadImage(): Promise<void> {
   return loading.image;
 }
 
-function loadVideo(): Promise<void> {
-  if (models.video) return Promise.resolve();
-  if (loading.video) return loading.video;
-  if (!VIDEO_PATH) return Promise.reject(new Error('VIDEO_MODEL not configured'));
+async function loadVideo(variant: VideoVariant = '5b'): Promise<void> {
+  if (models.video && videoVariant === variant) return;
+  if (loading.video) await loading.video.catch(() => {});
 
-  console.log(`Loading Video (WAN 2.2 5B): ${VIDEO_PATH}`);
+  if (models.video && videoVariant !== variant) {
+    console.log(`Unloading Video (${videoVariant})...`);
+    await models.video.unload();
+    models.video = null;
+    videoVariant = null;
+  }
+
+  if (models.video) return;
+
+  const v = VIDEO_VARIANTS[variant];
+  const modelPath = `${v.dir}/${v.model}`;
+  console.log(`Loading Video (${v.label}): ${modelPath}`);
+
   loading.video = (async () => {
-    const m = createModel(VIDEO_PATH, 'image');
+    const m = createModel(modelPath, 'image');
     await m.load({
-      vaePath: VIDEO_VAE_PATH,
-      t5xxlPath: VIDEO_T5XXL_PATH,
-      vaeDecodeOnly: false,
-      offloadToCpu: true,
+      vaePath: `${v.dir}/${v.vae}`,
+      t5xxlPath: `${v.dir}/${v.t5xxl}`,
+      ...(v.highNoiseModel ? { highNoiseDiffusionModelPath: `${v.dir}/${v.highNoiseModel}` } : {}),
+      flashAttn: true,
+      vaeDecodeOnly: true,
     });
     models.video = m;
-    console.log('Video ready');
+    videoVariant = variant;
+    console.log(`Video ready (${v.label})`);
   })().catch(e => { loading.video = null; throw e; });
   return loading.video;
 }
@@ -134,7 +185,7 @@ async function handleLoad(req: IncomingMessage, res: ServerResponse) {
     llm: loadLlm,
     tts: loadTts,
     image: loadImage,
-    video: loadVideo,
+    video: () => loadVideo((body.variant ?? '5b') as VideoVariant),
   };
 
   const loader = loaders[type];
@@ -234,21 +285,29 @@ async function handleImage(req: IncomingMessage, res: ServerResponse) {
 }
 
 async function handleVideo(req: IncomingMessage, res: ServerResponse) {
-  if (!models.video) return errorResponse(res, 'Video model not loaded. Click the Video tab to load it.', 503);
-
   const body = JSON.parse(await readBody(req));
+  const variant = (body.variant ?? '5b') as VideoVariant;
   const prompt = body.prompt ?? '';
   if (!prompt) return errorResponse(res, 'Missing "prompt" field', 400);
 
   try {
-    const frames = await models.video.generateVideo(prompt, {
-      width: body.width ?? 832,
-      height: body.height ?? 480,
+    if (!models.video || videoVariant !== variant) await loadVideo(variant);
+    const v = VIDEO_VARIANTS[variant];
+    const [width, height] = VIDEO_RESOLUTIONS[body.aspect ?? '16:9'] ?? VIDEO_RESOLUTIONS['16:9'];
+    const frames = await models.video!.generateVideo(prompt, {
+      width,
+      height,
+      negativePrompt: WAN_NEGATIVE_PROMPT,
       videoFrames: body.videoFrames ?? 33,
-      steps: body.steps ?? 30,
-      cfgScale: body.cfgScale ?? 6.0,
-      flowShift: body.flowShift ?? 3.0,
+      steps: body.steps ?? v.defaults.steps,
+      cfgScale: body.cfgScale ?? v.defaults.cfgScale,
+      flowShift: body.flowShift ?? v.defaults.flowShift,
       seed: body.seed,
+      ...(v.highNoiseDefaults ? {
+        highNoiseSteps: v.highNoiseDefaults.steps,
+        highNoiseCfgScale: v.highNoiseDefaults.cfgScale,
+        highNoiseSampleMethod: v.highNoiseDefaults.sampleMethod,
+      } : {}),
     });
     const b64Frames = frames.map(f => f.toString('base64'));
     json(res, { frames: b64Frames });
@@ -265,7 +324,7 @@ async function handleStatus(_req: IncomingMessage, res: ServerResponse) {
     ttsLoading: loading.tts !== null && !models.tts,
     image: models.image?.loaded ?? false,
     imageLoading: loading.image !== null && !models.image,
-    video: models.video?.loaded ?? false,
+    video: models.video ? { loaded: models.video.loaded, variant: videoVariant } : false,
     videoLoading: loading.video !== null && !models.video,
   });
 }
@@ -362,7 +421,8 @@ const HTML = /* html */ `<!DOCTYPE html>
 
   .options-row { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
   .options-row label { font-size: 0.8rem; color: #888; }
-  .options-row input { width: 70px; padding: 4px; background: #111; border: 1px solid #333; color: #e0e0e0; border-radius: 4px; font-size: 0.8rem; }
+  .options-row input, .options-row select { width: 70px; padding: 4px; background: #111; border: 1px solid #333; color: #e0e0e0; border-radius: 4px; font-size: 0.8rem; }
+  .options-row select { width: auto; }
   .options-row input.wide { width: 200px; }
   .hidden { display: none !important; }
 </style>
@@ -426,10 +486,10 @@ const HTML = /* html */ `<!DOCTYPE html>
     <button class="btn" id="video-send">Generate</button>
   </div>
   <div class="options-row">
-    <label>W <input type="text" id="video-w" placeholder="832"></label>
-    <label>H <input type="text" id="video-h" placeholder="480"></label>
-    <label>Frames <input type="text" id="video-frames" placeholder="33"></label>
-    <label>Steps <input type="text" id="video-steps" placeholder="30"></label>
+    <label>Model <select id="video-variant"><option value="5b">5B</option><option value="turbo-a14b">Turbo A14B</option></select></label>
+    <label>Aspect <select id="video-aspect"><option value="16:9">16:9 (832×480)</option><option value="9:16">9:16 (480×832)</option><option value="1:1">1:1 (624×624)</option></select></label>
+    <label>Frames <select id="video-frames"><option value="17">17 (~1s)</option><option value="33" selected>33 (~2s)</option><option value="49">49 (~3s)</option><option value="65">65 (~4s)</option><option value="81">81 (~5s)</option></select></label>
+    <label>Steps <input type="number" id="video-steps" min="10" max="50" value="30"></label>
   </div>
   <div class="progress" id="video-progress"><div class="progress-bar"></div></div>
   <div class="output" id="video-output"></div>
@@ -451,12 +511,12 @@ document.querySelectorAll('.tab').forEach(tab => {
 
     const modelType = tab.dataset.model;
     if (modelState[modelType] === 'off') {
-      loadModel(modelType);
+      loadModel(modelType, modelType === 'video' ? { variant: document.getElementById('video-variant').value } : {});
     }
   });
 });
 
-async function loadModel(type) {
+async function loadModel(type, extra = {}) {
   modelState[type] = 'loading';
   updateTabs();
   updateStatus();
@@ -465,7 +525,7 @@ async function loadModel(type) {
     const res = await fetch('/api/load', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type }),
+      body: JSON.stringify({ type, ...extra }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
@@ -502,7 +562,7 @@ async function checkStatus() {
     if (s.llm) modelState.llm = 'on';
     if (ttsOn) modelState.tts = 'on';
     if (s.image) modelState.image = 'on';
-    if (s.video) modelState.video = 'on';
+    if (s.video && s.video.loaded) modelState.video = 'on';
     if (s.llmLoading) modelState.llm = 'loading';
     if (s.ttsLoading) modelState.tts = 'loading';
     if (s.imageLoading) modelState.image = 'loading';
@@ -671,6 +731,13 @@ document.getElementById('image-send').addEventListener('click', async () => {
 });
 
 // --- Video ---
+const videoDefaults = { '5b': { steps: 30, min: 10, max: 50 }, 'turbo-a14b': { steps: 10, min: 4, max: 30 } };
+document.getElementById('video-variant').addEventListener('change', (e) => {
+  const d = videoDefaults[e.target.value] || videoDefaults['5b'];
+  const el = document.getElementById('video-steps');
+  el.min = d.min; el.max = d.max; el.value = d.steps;
+});
+
 let videoFrames = [];
 let videoIdx = 0;
 let videoTimer = null;
@@ -690,10 +757,10 @@ document.getElementById('video-send').addEventListener('click', async () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         prompt,
-        width: parseInt(document.getElementById('video-w').value) || undefined,
-        height: parseInt(document.getElementById('video-h').value) || undefined,
-        videoFrames: parseInt(document.getElementById('video-frames').value) || undefined,
-        steps: parseInt(document.getElementById('video-steps').value) || undefined,
+        variant: document.getElementById('video-variant').value,
+        aspect: document.getElementById('video-aspect').value,
+        videoFrames: parseInt(document.getElementById('video-frames').value),
+        steps: parseInt(document.getElementById('video-steps').value),
       }),
     });
     if (!res.ok) {

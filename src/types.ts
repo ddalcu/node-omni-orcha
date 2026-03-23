@@ -152,6 +152,8 @@ export interface ImageLoadOptions {
   flashAttn?: boolean;
   /** Only load VAE decoder (default: true). Set to false for video generation or image-to-video. */
   vaeDecodeOnly?: boolean;
+  /** For WAN2.2 turbo: path to high-noise diffusion model */
+  highNoiseDiffusionModelPath?: string;
 }
 
 export interface ImageOptions {
@@ -190,6 +192,12 @@ export interface VideoOptions {
   scheduler?: Scheduler;
   /** CLIP skip layers */
   clipSkip?: number;
+  /** High-noise sampling steps (WAN2.2 turbo) */
+  highNoiseSteps?: number;
+  /** High-noise CFG scale (WAN2.2 turbo) */
+  highNoiseCfgScale?: number;
+  /** High-noise sampling method (WAN2.2 turbo) */
+  highNoiseSampleMethod?: SampleMethod;
 }
 
 export interface ImageModel {

@@ -28,6 +28,7 @@ private:
   std::string t5xxl_path_;
   std::string llm_path_;
   std::string vae_path_;
+  std::string high_noise_diffusion_model_path_;
   int threads_ = -1;
   bool keep_vae_on_cpu_ = false;
   bool offload_to_cpu_ = false;

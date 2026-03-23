@@ -3,8 +3,6 @@ import { createLlmModel } from './llm/llm-model.ts';
 import { createImageModel } from './image/image-model.ts';
 import { createSttModel } from './stt/stt-model.ts';
 import { createTtsModel } from './tts/tts-model.ts';
-import { readGGUFMetadata } from './utils/gguf-reader.ts';
-import { detectGpu } from './utils/gpu.ts';
 import type {
   Model,
   LlmModel,
@@ -13,8 +11,6 @@ import type {
   TtsModel,
   ModelType,
   LoadModelOptions,
-  GGUFModelInfo,
-  GpuInfo,
 } from './types.ts';
 
 // Re-export all types

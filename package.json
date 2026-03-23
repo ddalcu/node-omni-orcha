@@ -20,7 +20,8 @@
     "test": "node --test test/*.test.ts",
     "test:llm": "node --test test/llm.test.ts",
     "test:unit": "node --test test/model-detector.test.ts test/gguf-reader.test.ts",
-    "test:samuel": "node scripts/samuel-jackson-test.ts"
+    "test:samuel": "node scripts/samuel-jackson-test.ts",
+    "serve": "MODELS_DIR=$HOME/.orcha/workspace/.models LLM_MODEL=$HOME/.orcha/workspace/.models/Qwen3.5-4B-IQ4_NL.gguf TTS_MODEL=$HOME/.orcha/workspace/.models/qwen3-tts node server.ts"
   },
   "dependencies": {
     "node-addon-api": "^8.3.1"

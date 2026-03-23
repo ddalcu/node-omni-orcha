@@ -32,6 +32,7 @@ export function createImageModel(modelPath: string): ImageModel {
         t5xxlPath: options?.t5xxlPath ?? '',
         llmPath: options?.llmPath ?? '',
         vaePath: options?.vaePath ?? '',
+        highNoiseDiffusionModelPath: options?.highNoiseDiffusionModelPath ?? '',
         threads: options?.threads ?? -1,
         keepVaeOnCpu: options?.keepVaeOnCpu ?? false,
         offloadToCpu: options?.offloadToCpu ?? false,
@@ -77,6 +78,9 @@ export function createImageModel(modelPath: string): ImageModel {
         sampleMethod: options?.sampleMethod ?? 'euler',
         scheduler: options?.scheduler,
         clipSkip: options?.clipSkip ?? -1,
+        ...(options?.highNoiseSteps != null ? { highNoiseSteps: options.highNoiseSteps } : {}),
+        ...(options?.highNoiseCfgScale != null ? { highNoiseCfgScale: options.highNoiseCfgScale } : {}),
+        ...(options?.highNoiseSampleMethod ? { highNoiseSampleMethod: options.highNoiseSampleMethod } : {}),
       }) as Buffer[];
     },
 

@@ -8,8 +8,7 @@ execute_process(
 )
 string(REPLACE "\"" "" NODE_ADDON_API_DIR ${NODE_ADDON_API_DIR})
 
-# Use the CPU-only build to avoid Metal shader issues
-set(TTS_BUILD_DIR "${CMAKE_SOURCE_DIR}/deps/TTS.cpp/build-cpu")
+# TTS_BUILD_DIR is set by the parent CMakeLists.txt ExternalProject
 
 set(TTS_SOURCES
   tts_binding.cpp

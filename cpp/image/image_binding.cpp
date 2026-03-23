@@ -64,6 +64,7 @@ ImageContext::ImageContext(const Napi::CallbackInfo& info)
     t5xxl_path_ = getStringOption(opts, "t5xxlPath", "");
     llm_path_ = getStringOption(opts, "llmPath", "");
     vae_path_ = getStringOption(opts, "vaePath", "");
+    high_noise_diffusion_model_path_ = getStringOption(opts, "highNoiseDiffusionModelPath", "");
     threads_ = getInt32Option(opts, "threads", -1);
     keep_vae_on_cpu_ = getBoolOption(opts, "keepVaeOnCpu", false);
     offload_to_cpu_ = getBoolOption(opts, "offloadToCpu", false);
@@ -92,6 +93,7 @@ public:
       t5xxl_path_(img_ctx->t5xxl_path_),
       llm_path_(img_ctx->llm_path_),
       vae_path_(img_ctx->vae_path_),
+      high_noise_diffusion_model_path_(img_ctx->high_noise_diffusion_model_path_),
       threads_(img_ctx->threads_),
       keep_vae_on_cpu_(img_ctx->keep_vae_on_cpu_),
       offload_to_cpu_(img_ctx->offload_to_cpu_),
@@ -122,6 +124,10 @@ protected:
       if (!vae_path_.empty()) {
         params.vae_path = vae_path_.c_str();
       }
+    }
+
+    if (!high_noise_diffusion_model_path_.empty()) {
+      params.high_noise_diffusion_model_path = high_noise_diffusion_model_path_.c_str();
     }
 
     params.vae_decode_only = vae_decode_only_;
@@ -159,6 +165,7 @@ private:
   std::string t5xxl_path_;
   std::string llm_path_;
   std::string vae_path_;
+  std::string high_noise_diffusion_model_path_;
   int threads_;
   bool keep_vae_on_cpu_;
   bool offload_to_cpu_;
@@ -389,7 +396,11 @@ public:
     sample_method_t sample_method,
     scheduler_t scheduler,
     int clip_skip,
-    bool scheduler_specified
+    bool scheduler_specified,
+    int high_noise_steps,
+    float high_noise_cfg_scale,
+    sample_method_t high_noise_sample_method,
+    bool high_noise_specified
   ) : Napi::AsyncWorker(env),
       deferred_(Napi::Promise::Deferred::New(env)),
       ctx_(ctx),
@@ -403,7 +414,11 @@ public:
       sample_method_(sample_method),
       scheduler_(scheduler),
       clip_skip_(clip_skip),
-      scheduler_specified_(scheduler_specified) {}
+      scheduler_specified_(scheduler_specified),
+      high_noise_steps_(high_noise_steps),
+      high_noise_cfg_scale_(high_noise_cfg_scale),
+      high_noise_sample_method_(high_noise_sample_method),
+      high_noise_specified_(high_noise_specified) {}
 
   Napi::Promise Promise() { return deferred_.Promise(); }
 
@@ -429,6 +444,12 @@ protected:
       vparams.sample_params.scheduler = scheduler_;
     } else {
       vparams.sample_params.scheduler = sd_get_default_scheduler(ctx_, sample_method_);
+    }
+
+    if (high_noise_specified_) {
+      vparams.high_noise_sample_params.sample_steps = high_noise_steps_;
+      vparams.high_noise_sample_params.guidance.txt_cfg = high_noise_cfg_scale_;
+      vparams.high_noise_sample_params.sample_method = high_noise_sample_method_;
     }
 
     int num_frames_out = 0;
@@ -499,6 +520,10 @@ private:
   scheduler_t scheduler_;
   int clip_skip_;
   bool scheduler_specified_;
+  int high_noise_steps_;
+  float high_noise_cfg_scale_;
+  sample_method_t high_noise_sample_method_;
+  bool high_noise_specified_;
   VideoResult result_;
 };
 
@@ -527,6 +552,10 @@ Napi::Value ImageContext::GenerateVideo(const Napi::CallbackInfo& info) {
   scheduler_t scheduler = DISCRETE_SCHEDULER;
   int clipSkip = -1;
   bool schedulerSpecified = false;
+  int highNoiseSteps = -1;
+  float highNoiseCfgScale = -1.0f;
+  sample_method_t highNoiseSampleMethod = EULER_SAMPLE_METHOD;
+  bool highNoiseSpecified = false;
 
   if (info.Length() >= 2 && info[1].IsObject()) {
     Napi::Object opts = info[1].As<Napi::Object>();
@@ -555,6 +584,20 @@ Napi::Value ImageContext::GenerateVideo(const Napi::CallbackInfo& info) {
       );
       schedulerSpecified = true;
     }
+    if (opts.Has("highNoiseSteps") && opts.Get("highNoiseSteps").IsNumber()) {
+      highNoiseSteps = opts.Get("highNoiseSteps").As<Napi::Number>().Int32Value();
+      highNoiseSpecified = true;
+    }
+    if (opts.Has("highNoiseCfgScale") && opts.Get("highNoiseCfgScale").IsNumber()) {
+      highNoiseCfgScale = (float)opts.Get("highNoiseCfgScale").As<Napi::Number>().DoubleValue();
+      highNoiseSpecified = true;
+    }
+    if (opts.Has("highNoiseSampleMethod") && opts.Get("highNoiseSampleMethod").IsString()) {
+      highNoiseSampleMethod = parse_sample_method(
+        opts.Get("highNoiseSampleMethod").As<Napi::String>().Utf8Value()
+      );
+      highNoiseSpecified = true;
+    }
   }
 
   auto* worker = new GenerateVideoWorker(
@@ -562,7 +605,8 @@ Napi::Value ImageContext::GenerateVideo(const Napi::CallbackInfo& info) {
     std::move(prompt), std::move(negativePrompt),
     width, height, videoFrames,
     cfgScale, flowShift, steps, seed,
-    sampleMethod, scheduler, clipSkip, schedulerSpecified
+    sampleMethod, scheduler, clipSkip, schedulerSpecified,
+    highNoiseSteps, highNoiseCfgScale, highNoiseSampleMethod, highNoiseSpecified
   );
   worker->Queue();
   return worker->Promise();

@@ -1,0 +1,115 @@
+name: Build and Publish
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            package: darwin-arm64
+            gpu: metal
+          - os: macos-13
+            package: darwin-x64
+            gpu: cpu
+          - os: ubuntu-24.04
+            package: linux-x64
+            gpu: cpu
+          - os: ubuntu-24.04
+            package: linux-x64-cuda
+            gpu: cuda
+          - os: ubuntu-24.04-arm
+            package: linux-arm64
+            gpu: cpu
+          - os: windows-2022
+            package: win32-x64
+            gpu: cpu
+          - os: windows-2022
+            package: win32-x64-cuda
+            gpu: cuda
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '25'
+
+      - name: Install CUDA Toolkit
+        if: matrix.gpu == 'cuda'
+        uses: Jimver/cuda-toolkit@v0.2.22
+        with:
+          cuda: '12.6.3'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build native addons
+        run: npm run build:${{ matrix.gpu }}
+
+      - name: Package artifacts
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          cp build/Release/*.node artifacts/
+          cp build/Release/*.metallib artifacts/ 2>/dev/null || true
+          cp packages/${{ matrix.package }}/package.json artifacts/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.package }}
+          path: artifacts/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '25'
+          registry-url: 'https://registry.npmjs.org'
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Publish platform packages
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          for dir in artifacts/*/; do
+            pkg=$(basename "$dir")
+            echo "Publishing @agent-orcha/node-omni-orcha-$pkg@$VERSION"
+            cd "$dir"
+            node -e "
+              const fs = require('fs');
+              const p = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+              p.version = '$VERSION';
+              fs.writeFileSync('package.json', JSON.stringify(p, null, 2) + '\n');
+            "
+            npm publish --access public --provenance
+            cd - > /dev/null
+          done
+
+      - name: Publish main package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public --provenance

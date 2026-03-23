@@ -14,9 +14,10 @@ const loadedBindings = new Map<string, NativeBinding>();
 /**
  * Load a native .node addon by engine name.
  * Resolution order:
- *   1. Optional platform package (@node-omni-orcha/{platform}-{arch}-{gpu})
- *   2. Optional platform package without GPU suffix
- *   3. Local cmake-js build (./build/Release/{engine}.node)
+ *   1. Custom bindings directory (NODE_OMNI_ORCHA_BINDINGS env var — for SEA / standalone)
+ *   2. CUDA-specific platform package (@agent-orcha/node-omni-orcha-{platform}-{arch}-cuda)
+ *   3. Default platform package (@agent-orcha/node-omni-orcha-{platform}-{arch})
+ *   4. Local cmake-js build (./build/Release/{engine}.node)
  */
 export function loadBinding(engine: string): NativeBinding {
   const cached = loadedBindings.get(engine);
@@ -26,12 +27,23 @@ export function loadBinding(engine: string): NativeBinding {
   const arch = process.arch;
   const gpu = detectGpu();
 
-  // Try optional platform packages
-  const gpuSuffix = gpu.backend !== 'cpu' ? `-${gpu.backend}` : '';
-  const candidates = [
-    `@node-omni-orcha/${platform}-${arch}${gpuSuffix}/${engine}.node`,
-    `@node-omni-orcha/${platform}-${arch}/${engine}.node`,
-  ];
+  // 1. Custom bindings directory (SEA / standalone deployments)
+  const bindingsDir = process.env.NODE_OMNI_ORCHA_BINDINGS;
+  if (bindingsDir) {
+    const customPath = path.join(bindingsDir, `${engine}.node`);
+    if (existsSync(customPath)) {
+      const binding = require(customPath) as NativeBinding;
+      loadedBindings.set(engine, binding);
+      return binding;
+    }
+  }
+
+  // 2-3. Platform npm packages (CUDA-specific first, then default)
+  const candidates: string[] = [];
+  if (gpu.backend === 'cuda') {
+    candidates.push(`@agent-orcha/node-omni-orcha-${platform}-${arch}-cuda/${engine}.node`);
+  }
+  candidates.push(`@agent-orcha/node-omni-orcha-${platform}-${arch}/${engine}.node`);
 
   for (const candidate of candidates) {
     try {
@@ -43,7 +55,7 @@ export function loadBinding(engine: string): NativeBinding {
     }
   }
 
-  // Try local build
+  // 4. Local cmake-js build (development)
   const localPath = path.resolve(
     path.dirname(new URL(import.meta.url).pathname),
     '..',
@@ -60,7 +72,7 @@ export function loadBinding(engine: string): NativeBinding {
 
   throw new Error(
     `Native binding "${engine}.node" not found. ` +
-    `Install a platform package (@node-omni-orcha/${platform}-${arch}) ` +
+    `Install a platform package (@agent-orcha/node-omni-orcha-${platform}-${arch}) ` +
     `or build from source: npm run build`,
   );
 }

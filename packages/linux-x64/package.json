@@ -1,0 +1,16 @@
+{
+  "name": "@agent-orcha/node-omni-orcha-linux-x64",
+  "version": "0.0.0",
+  "description": "node-omni-orcha prebuilt binaries for Linux x64 (CPU)",
+  "os": ["linux"],
+  "cpu": ["x64"],
+  "files": ["*.node"],
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nickvdyck/node-omni-orcha"
+  }
+}

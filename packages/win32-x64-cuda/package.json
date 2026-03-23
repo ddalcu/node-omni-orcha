@@ -1,0 +1,16 @@
+{
+  "name": "@agent-orcha/node-omni-orcha-win32-x64-cuda",
+  "version": "0.0.0",
+  "description": "node-omni-orcha prebuilt binaries for Windows x64 (CUDA GPU)",
+  "os": ["win32"],
+  "cpu": ["x64"],
+  "files": ["*.node"],
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nickvdyck/node-omni-orcha"
+  }
+}

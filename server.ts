@@ -8,23 +8,30 @@ const MODELS_DIR = process.env.MODELS_DIR ?? `${process.env.HOME}/.orcha/workspa
 
 const LLM_PATH = process.env.LLM_MODEL ?? `${MODELS_DIR}/Qwen3.5-4B-IQ4_NL.gguf`;
 const TTS_PATH = process.env.TTS_MODEL ?? `${MODELS_DIR}/qwen3-tts`;
-const IMAGE_PATH = process.env.IMAGE_MODEL ?? `${MODELS_DIR}/flux-2-klein-4b-Q4_K_M.gguf`;
-// FLUX 2 Klein supporting files
-const IMAGE_VAE_PATH = process.env.IMAGE_VAE ?? '';
-const IMAGE_LLM_PATH = process.env.IMAGE_LLM ?? '';
-const IMAGE_CLIP_L_PATH = process.env.IMAGE_CLIP_L ?? '';
-const IMAGE_T5XXL_PATH = process.env.IMAGE_T5XXL ?? '';
+
+// FLUX 2 Klein (image generation)
+const IMAGE_DIR = `${MODELS_DIR}/flux2-klein`;
+const IMAGE_PATH = process.env.IMAGE_MODEL ?? `${IMAGE_DIR}/flux-2-klein-4b-Q4_K_M.gguf`;
+const IMAGE_VAE_PATH = process.env.IMAGE_VAE ?? `${IMAGE_DIR}/flux2-vae.safetensors`;
+const IMAGE_LLM_PATH = process.env.IMAGE_LLM ?? `${IMAGE_DIR}/Qwen3-4B-Q4_K_M.gguf`;
+
+// WAN 2.2 5B (video generation)
+const VIDEO_DIR = `${MODELS_DIR}/wan22-5b`;
+const VIDEO_PATH = process.env.VIDEO_MODEL ?? `${VIDEO_DIR}/Wan2.2-TI2V-5B-Q4_K_M.gguf`;
+const VIDEO_VAE_PATH = process.env.VIDEO_VAE ?? `${VIDEO_DIR}/Wan2.2_VAE.safetensors`;
+const VIDEO_T5XXL_PATH = process.env.VIDEO_T5XXL ?? `${VIDEO_DIR}/umt5-xxl-encoder-Q8_0.gguf`;
 
 // --- Model state ---
 const models: {
   llm: LlmModel | null;
   tts: TtsModel | null;
   image: ImageModel | null;
-} = { llm: null, tts: null, image: null };
+  video: ImageModel | null;
+} = { llm: null, tts: null, image: null, video: null };
 
 // Track loading state to prevent duplicate loads
 const loading: Record<string, Promise<void> | null> = {
-  llm: null, tts: null, image: null,
+  llm: null, tts: null, image: null, video: null,
 };
 
 // --- Helpers ---
@@ -60,10 +67,7 @@ function loadLlm(): Promise<void> {
     await m.load({ contextSize: 4096 });
     models.llm = m;
     console.log('LLM ready');
-  })().catch(e => {
-    loading.llm = null;
-    throw e;
-  });
+  })().catch(e => { loading.llm = null; throw e; });
   return loading.llm;
 }
 
@@ -78,10 +82,7 @@ function loadTts(): Promise<void> {
     await m.load({ engine: 'qwen3' });
     models.tts = m;
     console.log('TTS ready');
-  })().catch(e => {
-    loading.tts = null;
-    throw e;
-  });
+  })().catch(e => { loading.tts = null; throw e; });
   return loading.tts;
 }
 
@@ -90,22 +91,37 @@ function loadImage(): Promise<void> {
   if (loading.image) return loading.image;
   if (!IMAGE_PATH) return Promise.reject(new Error('IMAGE_MODEL not configured'));
 
-  console.log(`Loading Image: ${IMAGE_PATH}`);
+  console.log(`Loading Image (FLUX 2 Klein): ${IMAGE_PATH}`);
   loading.image = (async () => {
     const m = createModel(IMAGE_PATH, 'image');
     await m.load({
       vaePath: IMAGE_VAE_PATH,
       llmPath: IMAGE_LLM_PATH,
-      clipLPath: IMAGE_CLIP_L_PATH,
-      t5xxlPath: IMAGE_T5XXL_PATH,
     });
     models.image = m;
     console.log('Image ready');
-  })().catch(e => {
-    loading.image = null;
-    throw e;
-  });
+  })().catch(e => { loading.image = null; throw e; });
   return loading.image;
+}
+
+function loadVideo(): Promise<void> {
+  if (models.video) return Promise.resolve();
+  if (loading.video) return loading.video;
+  if (!VIDEO_PATH) return Promise.reject(new Error('VIDEO_MODEL not configured'));
+
+  console.log(`Loading Video (WAN 2.2 5B): ${VIDEO_PATH}`);
+  loading.video = (async () => {
+    const m = createModel(VIDEO_PATH, 'image');
+    await m.load({
+      vaePath: VIDEO_VAE_PATH,
+      t5xxlPath: VIDEO_T5XXL_PATH,
+      vaeDecodeOnly: false,
+      offloadToCpu: true,
+    });
+    models.video = m;
+    console.log('Video ready');
+  })().catch(e => { loading.video = null; throw e; });
+  return loading.video;
 }
 
 // --- Routes ---
@@ -118,6 +134,7 @@ async function handleLoad(req: IncomingMessage, res: ServerResponse) {
     llm: loadLlm,
     tts: loadTts,
     image: loadImage,
+    video: loadVideo,
   };
 
   const loader = loaders[type];
@@ -203,7 +220,7 @@ async function handleImage(req: IncomingMessage, res: ServerResponse) {
       width: body.width ?? 512,
       height: body.height ?? 512,
       steps: body.steps,
-      cfgScale: body.cfgScale,
+      cfgScale: body.cfgScale ?? 1.0,
       seed: body.seed,
     });
     res.writeHead(200, {
@@ -217,19 +234,20 @@ async function handleImage(req: IncomingMessage, res: ServerResponse) {
 }
 
 async function handleVideo(req: IncomingMessage, res: ServerResponse) {
-  if (!models.image) return errorResponse(res, 'Image model not loaded. Click the Image tab to load it.', 503);
+  if (!models.video) return errorResponse(res, 'Video model not loaded. Click the Video tab to load it.', 503);
 
   const body = JSON.parse(await readBody(req));
   const prompt = body.prompt ?? '';
   if (!prompt) return errorResponse(res, 'Missing "prompt" field', 400);
 
   try {
-    const frames = await models.image.generateVideo(prompt, {
+    const frames = await models.video.generateVideo(prompt, {
       width: body.width ?? 832,
       height: body.height ?? 480,
       videoFrames: body.videoFrames ?? 33,
-      steps: body.steps,
-      cfgScale: body.cfgScale,
+      steps: body.steps ?? 30,
+      cfgScale: body.cfgScale ?? 6.0,
+      flowShift: body.flowShift ?? 3.0,
       seed: body.seed,
     });
     const b64Frames = frames.map(f => f.toString('base64'));
@@ -247,11 +265,8 @@ async function handleStatus(_req: IncomingMessage, res: ServerResponse) {
     ttsLoading: loading.tts !== null && !models.tts,
     image: models.image?.loaded ?? false,
     imageLoading: loading.image !== null && !models.image,
-    config: {
-      llm: !!LLM_PATH,
-      tts: !!TTS_PATH,
-      image: !!IMAGE_PATH,
-    },
+    video: models.video?.loaded ?? false,
+    videoLoading: loading.video !== null && !models.video,
   });
 }
 
@@ -350,8 +365,6 @@ const HTML = /* html */ `<!DOCTYPE html>
   .options-row input { width: 70px; padding: 4px; background: #111; border: 1px solid #333; color: #e0e0e0; border-radius: 4px; font-size: 0.8rem; }
   .options-row input.wide { width: 200px; }
   .hidden { display: none !important; }
-
-  .load-notice { text-align: center; padding: 24px; color: #666; font-size: 0.85rem; }
 </style>
 </head>
 <body>
@@ -361,7 +374,7 @@ const HTML = /* html */ `<!DOCTYPE html>
   <button class="tab active" data-panel="chat" data-model="llm">Chat</button>
   <button class="tab" data-panel="tts" data-model="tts">TTS</button>
   <button class="tab" data-panel="image" data-model="image">Image</button>
-  <button class="tab" data-panel="video" data-model="image">Video</button>
+  <button class="tab" data-panel="video" data-model="video">Video</button>
 </div>
 
 <!-- Chat -->
@@ -425,9 +438,8 @@ const HTML = /* html */ `<!DOCTYPE html>
 <div class="status" id="status"></div>
 
 <script>
-// --- Model state tracking ---
-const modelState = { llm: 'off', tts: 'off', image: 'off' };
-const tabModelMap = { chat: 'llm', tts: 'tts', image: 'image', video: 'image' };
+// --- Model state tracking (image and video are separate models now) ---
+const modelState = { llm: 'off', tts: 'off', image: 'off', video: 'off' };
 
 // --- Tabs ---
 document.querySelectorAll('.tab').forEach(tab => {
@@ -437,7 +449,6 @@ document.querySelectorAll('.tab').forEach(tab => {
     tab.classList.add('active');
     document.getElementById(tab.dataset.panel).classList.add('active');
 
-    // Trigger model load on tab click
     const modelType = tab.dataset.model;
     if (modelState[modelType] === 'off') {
       loadModel(modelType);
@@ -491,13 +502,14 @@ async function checkStatus() {
     if (s.llm) modelState.llm = 'on';
     if (ttsOn) modelState.tts = 'on';
     if (s.image) modelState.image = 'on';
+    if (s.video) modelState.video = 'on';
     if (s.llmLoading) modelState.llm = 'loading';
     if (s.ttsLoading) modelState.tts = 'loading';
     if (s.imageLoading) modelState.image = 'loading';
+    if (s.videoLoading) modelState.video = 'loading';
 
     updateTabs();
 
-    // Show correct TTS options based on engine
     if (ttsEngine === 'qwen3') {
       document.getElementById('tts-options-kokoro').classList.add('hidden');
       document.getElementById('tts-options-qwen3').classList.remove('hidden');
@@ -511,7 +523,7 @@ async function checkStatus() {
 
 function updateStatus() {
   const el = document.getElementById('status');
-  el.innerHTML = ['llm', 'tts', 'image'].map(k => {
+  el.innerHTML = ['llm', 'tts', 'image', 'video'].map(k => {
     const state = modelState[k];
     const cls = state === 'on' ? 'on' : state === 'loading' ? 'loading-text' : 'off';
     const label = state === 'loading' ? 'loading...' : state;

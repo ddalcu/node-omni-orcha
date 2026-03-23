@@ -26,17 +26,20 @@
   "dependencies": {
     "node-addon-api": "^8.3.1"
   },
+  "optionalDependencies": {
+    "@agent-orcha/node-omni-orcha-darwin-arm64": "0.1.0",
+    "@agent-orcha/node-omni-orcha-darwin-x64": "0.1.0",
+    "@agent-orcha/node-omni-orcha-linux-x64": "0.1.0",
+    "@agent-orcha/node-omni-orcha-linux-arm64": "0.1.0",
+    "@agent-orcha/node-omni-orcha-win32-x64": "0.1.0"
+  },
   "devDependencies": {
     "@types/node": "^25.0.0",
     "cmake-js": "^7.3.0",
     "typescript": "^5.8.0"
   },
   "files": [
-    "src/",
-    "cpp/",
-    "deps/",
-    "CMakeLists.txt",
-    "prebuilds/"
+    "src/"
   ],
   "keywords": [
     "llm", "tts", "stt", "whisper", "llama", "stable-diffusion", "flux",

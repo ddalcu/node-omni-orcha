@@ -1,0 +1,16 @@
+{
+  "name": "@agent-orcha/node-omni-orcha-darwin-arm64",
+  "version": "0.0.0",
+  "description": "node-omni-orcha prebuilt binaries for macOS arm64 (Metal GPU)",
+  "os": ["darwin"],
+  "cpu": ["arm64"],
+  "files": ["*.node", "*.metallib"],
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nickvdyck/node-omni-orcha"
+  }
+}

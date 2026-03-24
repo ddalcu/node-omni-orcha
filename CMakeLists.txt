@@ -94,6 +94,14 @@ endif()
 if(EXISTS "${CMAKE_SOURCE_DIR}/deps/TTS.cpp/CMakeLists.txt")
   include(ExternalProject)
   set(TTS_BUILD_DIR "${CMAKE_BINARY_DIR}/tts-build")
+
+  set(TTS_PLATFORM_BYPRODUCTS "")
+  if(APPLE)
+    list(APPEND TTS_PLATFORM_BYPRODUCTS
+      "${TTS_BUILD_DIR}/ggml/src/ggml-metal/libggml-metal.a"
+      "${TTS_BUILD_DIR}/ggml/src/ggml-blas/libggml-blas.a"
+    )
+  endif()
   ExternalProject_Add(tts_external
     SOURCE_DIR "${CMAKE_SOURCE_DIR}/deps/TTS.cpp"
     BINARY_DIR "${TTS_BUILD_DIR}"
@@ -109,8 +117,7 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/deps/TTS.cpp/CMakeLists.txt")
       "${TTS_BUILD_DIR}/ggml/src/libggml.a"
       "${TTS_BUILD_DIR}/ggml/src/libggml-base.a"
       "${TTS_BUILD_DIR}/ggml/src/ggml-cpu/libggml-cpu.a"
-      "${TTS_BUILD_DIR}/ggml/src/ggml-metal/libggml-metal.a"
-      "${TTS_BUILD_DIR}/ggml/src/ggml-blas/libggml-blas.a"
+      ${TTS_PLATFORM_BYPRODUCTS}
     INSTALL_COMMAND ""
   )
 
@@ -129,11 +136,13 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/deps/TTS.cpp/CMakeLists.txt")
   add_library(tts_ggml_cpu STATIC IMPORTED)
   set_target_properties(tts_ggml_cpu PROPERTIES IMPORTED_LOCATION "${TTS_BUILD_DIR}/ggml/src/ggml-cpu/libggml-cpu.a")
 
-  add_library(tts_ggml_metal STATIC IMPORTED)
-  set_target_properties(tts_ggml_metal PROPERTIES IMPORTED_LOCATION "${TTS_BUILD_DIR}/ggml/src/ggml-metal/libggml-metal.a")
+  if(APPLE)
+    add_library(tts_ggml_metal STATIC IMPORTED)
+    set_target_properties(tts_ggml_metal PROPERTIES IMPORTED_LOCATION "${TTS_BUILD_DIR}/ggml/src/ggml-metal/libggml-metal.a")
 
-  add_library(tts_ggml_blas STATIC IMPORTED)
-  set_target_properties(tts_ggml_blas PROPERTIES IMPORTED_LOCATION "${TTS_BUILD_DIR}/ggml/src/ggml-blas/libggml-blas.a")
+    add_library(tts_ggml_blas STATIC IMPORTED)
+    set_target_properties(tts_ggml_blas PROPERTIES IMPORTED_LOCATION "${TTS_BUILD_DIR}/ggml/src/ggml-blas/libggml-blas.a")
+  endif()
 
   set(TTS_AVAILABLE ON)
   message(STATUS "[node-omni-orcha] TTS.cpp configured as external project")

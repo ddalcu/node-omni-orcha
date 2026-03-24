@@ -28,7 +28,6 @@
   },
   "optionalDependencies": {
     "@agent-orcha/node-omni-orcha-darwin-arm64": "0.1.0",
-    "@agent-orcha/node-omni-orcha-darwin-x64": "0.1.0",
     "@agent-orcha/node-omni-orcha-linux-x64": "0.1.0",
     "@agent-orcha/node-omni-orcha-linux-arm64": "0.1.0",
     "@agent-orcha/node-omni-orcha-win32-x64": "0.1.0"

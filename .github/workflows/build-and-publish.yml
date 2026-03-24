@@ -18,9 +18,6 @@ jobs:
           - os: macos-14
             package: darwin-arm64
             gpu: metal
-          - os: macos-13
-            package: darwin-x64
-            gpu: cpu
           - os: ubuntu-24.04
             package: linux-x64
             gpu: cpu

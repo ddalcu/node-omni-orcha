@@ -39,12 +39,12 @@ target_link_libraries(tts_addon PRIVATE
   "${TTS_BUILD_DIR}/src/libtts.a"
   "${TTS_BUILD_DIR}/ggml/src/libggml.a"
   "${TTS_BUILD_DIR}/ggml/src/ggml-cpu/libggml-cpu.a"
-  "${TTS_BUILD_DIR}/ggml/src/ggml-blas/libggml-blas.a"
   "${TTS_BUILD_DIR}/ggml/src/libggml-base.a"
 )
 
 if(APPLE)
   target_link_libraries(tts_addon PRIVATE
+    "${TTS_BUILD_DIR}/ggml/src/ggml-blas/libggml-blas.a"
     "-framework Accelerate"
   )
 endif()

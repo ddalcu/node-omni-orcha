@@ -73,6 +73,7 @@ if(GPU_BACKEND STREQUAL "cuda")
   target_link_libraries(tts_qwen3_addon PRIVATE
     "${Q3_GGML_BUILD}/src/ggml-cuda${CFG}/${P}ggml-cuda${S}"
     CUDA::cudart
+    CUDA::cuda_driver
     CUDA::cublas
     CUDA::cublasLt
   )

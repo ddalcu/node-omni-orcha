@@ -103,11 +103,6 @@ jobs:
           echo "CUDA_PATH=C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6" >> $GITHUB_ENV
 
       # --- Pre-build qwen3-tts.cpp ---
-      - name: Apply qwen3-tts Windows patches
-        if: runner.os == 'Windows'
-        shell: bash
-        run: cd deps/qwen3-tts.cpp && git apply ../../patches/qwen3-tts-windows.patch
-
       - name: Pre-build qwen3-tts.cpp
         shell: bash
         run: |

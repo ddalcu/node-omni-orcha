@@ -13,4 +13,4 @@
 	ignore = untracked
 [submodule "deps/qwen3-tts.cpp"]
 	path = deps/qwen3-tts.cpp
-	url = https://github.com/predict-woo/qwen3-tts.cpp.git
+	url = https://github.com/ddalcu/qwen3-tts.cpp.git

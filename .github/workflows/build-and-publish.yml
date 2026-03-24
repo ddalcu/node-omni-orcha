@@ -115,6 +115,7 @@ jobs:
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON
             -DBUILD_SHARED_LIBS=OFF
             -DGGML_BUILD_TESTS=OFF
+            -DGGML_BUILD_EXAMPLES=OFF
           )
 
           case "${{ matrix.gpu }}" in
@@ -133,10 +134,16 @@ jobs:
           cmake --build "$QWEN3_DIR/ggml/build" --config Release -j "$JOBS"
 
           # Step 2: Build qwen3-tts.cpp
-          cmake -S "$QWEN3_DIR" -B "$QWEN3_DIR/build" \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+          QWEN3_ARGS=(
+            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON
             -DQWEN3_TTS_COREML=OFF
+          )
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            QWEN3_ARGS+=("-DCMAKE_CXX_FLAGS=/D_USE_MATH_DEFINES /D_CRT_SECURE_NO_WARNINGS")
+          fi
+
+          cmake -S "$QWEN3_DIR" -B "$QWEN3_DIR/build" "${QWEN3_ARGS[@]}"
 
           cmake --build "$QWEN3_DIR/build" --config Release \
             --target qwen3_tts text_tokenizer tts_transformer audio_tokenizer_encoder audio_tokenizer_decoder \

@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
 import { readGGUFMetadata, kvCacheBytesPerToken, calculateOptimalContextSize } from '../src/utils/gguf-reader.ts';
 
 describe('readGGUFMetadata', () => {
@@ -10,7 +11,7 @@ describe('readGGUFMetadata', () => {
 
   it('returns null for non-GGUF files', async () => {
     // package.json is not a GGUF file
-    const result = await readGGUFMetadata(new URL('../package.json', import.meta.url).pathname);
+    const result = await readGGUFMetadata(fileURLToPath(new URL('../package.json', import.meta.url)));
     assert.equal(result, null);
   });
 });

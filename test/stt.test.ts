@@ -2,10 +2,15 @@ import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createModel } from '../src/index.ts';
 import { loadBinding } from '../src/binding-loader.ts';
 import type { SttModel } from '../src/types.ts';
 import { saveTestOutput } from './test-output-helper.ts';
+
+const MODELS_DIR = process.env['MODELS_DIR'] || path.join(process.env['HOME'] || process.env['USERPROFILE'] || '', '.orcha', 'workspace', '.models');
+const FIXTURES_DIR = fileURLToPath(new URL('./fixtures', import.meta.url));
 
 // Binding loader test
 describe('STT binding loader', () => {
@@ -26,12 +31,12 @@ describe('createModel stt', () => {
 });
 
 // Integration tests (require model + audio)
-const WHISPER_MODEL_PATH = new URL('./fixtures/whisper-tiny.bin', import.meta.url).pathname;
-const AUDIO_PATH = new URL('./fixtures/test-audio.pcm', import.meta.url).pathname;
+const WHISPER_MODEL_PATH = path.join(MODELS_DIR, 'whisper-tiny.bin');
+const AUDIO_PATH = path.join(FIXTURES_DIR, 'test-audio.pcm');
 const hasModel = existsSync(WHISPER_MODEL_PATH);
 const hasAudio = existsSync(AUDIO_PATH);
 
-describe('SttModel', { skip: !hasModel ? 'No whisper model at test/fixtures/whisper-tiny.bin — run scripts/download-test-models.sh --whisper' : undefined }, () => {
+describe('SttModel', { skip: !hasModel ? `No whisper model at ${WHISPER_MODEL_PATH} — run scripts/download-test-models.sh` : undefined }, () => {
   let model: SttModel;
 
   before(async () => {

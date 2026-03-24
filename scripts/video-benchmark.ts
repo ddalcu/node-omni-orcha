@@ -10,7 +10,7 @@ const WAN_NEGATIVE_PROMPT = '色调艳丽，过曝，静态，细节模糊不清
 const VARIANTS = {
   '5b': {
     dir: `${MODELS_DIR}/wan22-5b`,
-    model: 'Wan2.2-TI2V-5B-Q8_0.gguf',
+    model: 'Wan2.2-TI2V-5B-Q4_K_M.gguf',
     vae: 'Wan2.2_VAE.safetensors',
     t5xxl: 'umt5-xxl-encoder-Q8_0.gguf',
   },
@@ -37,7 +37,7 @@ interface TestCase {
 }
 
 const TESTS: TestCase[] = [
-  { name: 'quick-preview-turbo-81f-5s', variant: 'turbo', frames: 9, steps: 1, cfgScale: 3.5, flowShift: 3.0, highNoiseSteps: 2, highNoiseCfgScale: 3.5 },
+  { name: 'quick-preview-turbo-81f-5s', variant: '5b', frames: 9, steps: 20, cfgScale: 3.5, flowShift: 3.0, highNoiseSteps: 6, highNoiseCfgScale: 3.5 },
 ];
 
 const PROMPT = 'angle shot of a red car outside';

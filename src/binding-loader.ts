@@ -1,6 +1,7 @@
 import { createRequire } from 'node:module';
 import * as path from 'node:path';
 import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { detectGpu } from './utils/gpu.ts';
 
 const require = createRequire(import.meta.url);
@@ -54,7 +55,7 @@ export function loadBinding(): NativeBinding {
 
   // 4. Local cmake-js build (development)
   const localPath = path.resolve(
-    path.dirname(new URL(import.meta.url).pathname),
+    path.dirname(fileURLToPath(import.meta.url)),
     '..',
     'build',
     'Release',

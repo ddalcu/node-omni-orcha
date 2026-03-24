@@ -2,6 +2,7 @@ import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createModel } from '../src/index.ts';
 import type { TtsModel } from '../src/types.ts';
 import { saveTestOutput } from './test-output-helper.ts';
@@ -9,8 +10,8 @@ import { saveTestOutput } from './test-output-helper.ts';
 const QWEN3_MODELS_DIR = process.env['MODELS_DIR']
   ? `${process.env['MODELS_DIR']}/qwen3-tts`
   : `${process.env['HOME']}/.orcha/workspace/.models/qwen3-tts`;
-const GLADOS_WAV = new URL('./fixtures/GLaDOS.wav', import.meta.url).pathname;
-const SAMUEL_WAV = new URL('./fixtures/Samuel.wav', import.meta.url).pathname;
+const GLADOS_WAV = fileURLToPath(new URL('./fixtures/GLaDOS.wav', import.meta.url));
+const SAMUEL_WAV = fileURLToPath(new URL('./fixtures/Samuel.wav', import.meta.url));
 
 const hasModel = existsSync(`${QWEN3_MODELS_DIR}/qwen3-tts-0.6b-f16.gguf`);
 

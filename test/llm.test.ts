@@ -1,14 +1,16 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
+import * as path from 'node:path';
 import { loadModel, createModel } from '../src/index.ts';
 import type { LlmModel, ToolDefinition } from '../src/types.ts';
 import { saveTestOutput } from './test-output-helper.ts';
 
-const TEST_MODEL_PATH = new URL('./fixtures/tinyllama.gguf', import.meta.url).pathname;
+const MODELS_DIR = process.env['MODELS_DIR'] || path.join(process.env['HOME'] || process.env['USERPROFILE'] || '', '.orcha', 'workspace', '.models');
+const TEST_MODEL_PATH = path.join(MODELS_DIR, 'tinyllama.gguf');
 const hasModel = existsSync(TEST_MODEL_PATH);
 
-describe('LlmModel', { skip: !hasModel ? 'No test model at test/fixtures/tinyllama.gguf — run scripts/download-test-models.sh' : undefined }, () => {
+describe('LlmModel', { skip: !hasModel ? `No test model at ${TEST_MODEL_PATH} — run scripts/download-test-models.sh` : undefined }, () => {
   let model: LlmModel;
 
   before(async () => {
@@ -80,7 +82,7 @@ describe('createModel', { skip: !hasModel ? 'No test model' : undefined }, () =>
 });
 
 // ─── Tool Calling Tests (require a model with tool-calling template) ───
-const TOOL_MODEL_PATH = new URL('./fixtures/Qwen3.5-4B-IQ4_NL.gguf', import.meta.url).pathname;
+const TOOL_MODEL_PATH = path.join(MODELS_DIR, 'Qwen3.5-4B-IQ4_NL.gguf');
 const hasToolModel = existsSync(TOOL_MODEL_PATH);
 
 const weatherTool: ToolDefinition = {

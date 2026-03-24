@@ -6,12 +6,12 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { saveVideoFrames } from './test-output-helper.ts';
 
-const FIXTURES = join(import.meta.dirname, 'fixtures');
+const MODELS_DIR = process.env['MODELS_DIR'] || join(process.env['HOME'] || process.env['USERPROFILE'] || '', '.orcha', 'workspace', '.models');
 
-const WAN_MODEL = join(FIXTURES, 'Wan2.2-TI2V-5B-Q8_0.gguf');
-const WAN_TURBO = join(FIXTURES, 'Wan2.2-TI2V-5B-Turbo-Q8_0.gguf');
-const WAN_VAE   = join(FIXTURES, 'wan2.2_vae.safetensors');
-const UMT5_PATH = join(FIXTURES, 'umt5-xxl-encoder-Q3_K_S.gguf');
+const WAN_DIR = join(MODELS_DIR, 'wan22-5b');
+const WAN_MODEL = join(WAN_DIR, 'Wan2.2-TI2V-5B-Q4_K_M.gguf');
+const WAN_VAE   = join(WAN_DIR, 'Wan2.2_VAE.safetensors');
+const UMT5_PATH = join(WAN_DIR, 'umt5-xxl-encoder-Q8_0.gguf');
 
 const PROMPT = 'a woman walking on a beach';
 const MIN_FRAME_KB = 200;
@@ -55,21 +55,26 @@ describe('WAN 2.2 TI2V 5B (base)', { skip: !hasBase && 'WAN 2.2 base model files
     console.log(`    Base: ${frames.length} frames in ${elapsed}s`);
     console.log(`    Sizes: ${frames.map(f => `${(f.length / 1024).toFixed(0)}KB`).join(', ')}`);
 
-    const outDir = saveVideoFrames('wan22-TI2V-5B-Q8_0', params, frames);
+    const outDir = saveVideoFrames('wan22-TI2V-5B-Q4_K_M', params, frames);
     console.log(`    Saved: ${outDir}`);
   });
 });
 
 // --- WAN 2.2 Turbo Model ---
 
-const hasTurbo = existsSync(WAN_TURBO) && existsSync(WAN_VAE) && existsSync(UMT5_PATH);
+const TURBO_DIR = join(MODELS_DIR, 'wan22-turbo');
+const WAN_TURBO = join(TURBO_DIR, 'Wan2.2-T2V-A14B-LowNoise-Q8_0.gguf');
+const TURBO_VAE = join(TURBO_DIR, 'Wan2.1_VAE.safetensors');
+const TURBO_T5  = join(TURBO_DIR, 'umt5-xxl-encoder-Q8_0.gguf');
+
+const hasTurbo = existsSync(WAN_TURBO) && existsSync(TURBO_VAE) && existsSync(TURBO_T5);
 
 describe('WAN 2.2 TI2V 5B Turbo', { skip: !hasTurbo && 'WAN 2.2 Turbo model files not found' }, () => {
   let model: ImageModel;
 
   before(async () => {
     model = createModel(WAN_TURBO, 'image') as ImageModel;
-    await model.load({ t5xxlPath: UMT5_PATH, vaePath: WAN_VAE, flashAttn: true, vaeDecodeOnly: true });
+    await model.load({ t5xxlPath: TURBO_T5, vaePath: TURBO_VAE, flashAttn: true, vaeDecodeOnly: true });
   });
 
   after(async () => {
@@ -86,7 +91,7 @@ describe('WAN 2.2 TI2V 5B Turbo', { skip: !hasTurbo && 'WAN 2.2 Turbo model file
     console.log(`    Turbo: ${frames.length} frames in ${elapsed}s`);
     console.log(`    Sizes: ${frames.map(f => `${(f.length / 1024).toFixed(0)}KB`).join(', ')}`);
 
-    const outDir = saveVideoFrames('wan22-TI2V-5B-Turbo-Q8_0', params, frames);
+    const outDir = saveVideoFrames('wan22-T2V-A14B-Turbo-Q8_0', params, frames);
     console.log(`    Saved: ${outDir}`);
   });
 });

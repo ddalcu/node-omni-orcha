@@ -103,6 +103,11 @@ jobs:
           echo "CUDA_PATH=C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6" >> $GITHUB_ENV
 
       # --- Pre-build qwen3-tts.cpp ---
+      - name: Apply qwen3-tts Windows patches
+        if: runner.os == 'Windows'
+        shell: bash
+        run: cd deps/qwen3-tts.cpp && git apply ../../patches/qwen3-tts-windows.patch
+
       - name: Pre-build qwen3-tts.cpp
         shell: bash
         run: |
@@ -130,6 +135,11 @@ jobs:
               ;;
           esac
 
+          # Windows: match cmake-js static CRT (/MT) and enable CMP0091
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            GGML_ARGS+=(-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DCMAKE_POLICY_DEFAULT_CMP0091=NEW)
+          fi
+
           cmake -S "$QWEN3_DIR/ggml" -B "$QWEN3_DIR/ggml/build" "${GGML_ARGS[@]}"
           cmake --build "$QWEN3_DIR/ggml/build" --config Release -j "$JOBS"
 
@@ -140,7 +150,7 @@ jobs:
             -DQWEN3_TTS_COREML=OFF
           )
           if [[ "$RUNNER_OS" == "Windows" ]]; then
-            QWEN3_ARGS+=("-DCMAKE_CXX_FLAGS=-D_USE_MATH_DEFINES -D_CRT_SECURE_NO_WARNINGS")
+            QWEN3_ARGS+=(-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DCMAKE_POLICY_DEFAULT_CMP0091=NEW)
           fi
 
           cmake -S "$QWEN3_DIR" -B "$QWEN3_DIR/build" "${QWEN3_ARGS[@]}"

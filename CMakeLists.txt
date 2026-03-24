@@ -137,7 +137,7 @@ if(MSVC)
     _USE_MATH_DEFINES
     _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING
   )
-  target_compile_definitions(qwen3_tts PRIVATE _CRT_SECURE_NO_WARNINGS)
+  target_compile_definitions(qwen3_tts PRIVATE _CRT_SECURE_NO_WARNINGS _USE_MATH_DEFINES)
   target_compile_definitions(whisper PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
@@ -156,6 +156,11 @@ set_target_properties(omni PROPERTIES
   SUFFIX ".node"
   LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/Release"
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/Release"
+  # MSVC multi-config generators append a per-config subdirectory (e.g. Release/)
+  # to OUTPUT_DIRECTORY, causing build/Release/Release/. Setting the per-config
+  # property prevents this.
+  LIBRARY_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/Release"
+  RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/Release"
 )
 
 target_include_directories(omni PRIVATE
@@ -182,3 +187,10 @@ target_compile_definitions(omni PRIVATE
   NAPI_VERSION=9
   NODE_ADDON_API_DISABLE_DEPRECATED
 )
+
+# On Windows, PRIVATE link deps of static libraries (like CUDA::cuda_driver in
+# ggml-cuda) don't propagate to the final shared library. Link them explicitly.
+if(GPU_BACKEND STREQUAL "cuda")
+  find_package(CUDAToolkit REQUIRED)
+  target_link_libraries(omni PRIVATE CUDA::cudart CUDA::cublas CUDA::cuda_driver)
+endif()

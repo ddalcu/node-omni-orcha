@@ -124,6 +124,9 @@ jobs:
               ;;
             cuda)
               GGML_ARGS+=(-DGGML_METAL=OFF -DGGML_CUDA=ON)
+              if [[ "$RUNNER_OS" == "Windows" ]]; then
+                GGML_ARGS+=(-DCUDAToolkit_ROOT="$CUDA_PATH" -DCMAKE_CUDA_COMPILER="$CUDA_PATH/bin/nvcc.exe")
+              fi
               ;;
             *)
               GGML_ARGS+=(-DGGML_METAL=OFF -DGGML_CUDA=OFF)
@@ -173,8 +176,9 @@ jobs:
         shell: bash
         run: |
           mkdir -p artifacts
-          cp build/Release/*.node artifacts/
-          cp build/Release/*.metallib artifacts/ 2>/dev/null || true
+          # MSVC multi-config puts output in build/Release/Release/, others in build/Release/
+          cp build/Release/Release/*.node artifacts/ 2>/dev/null || cp build/Release/*.node artifacts/
+          cp build/Release/Release/*.metallib artifacts/ 2>/dev/null || cp build/Release/*.metallib artifacts/ 2>/dev/null || true
           cp packages/${{ matrix.package }}/package.json artifacts/
 
       - uses: actions/upload-artifact@v4

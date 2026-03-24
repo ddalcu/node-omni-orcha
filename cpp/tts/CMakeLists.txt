@@ -36,15 +36,15 @@ target_include_directories(tts_addon PRIVATE
 
 target_link_libraries(tts_addon PRIVATE
   ${CMAKE_JS_LIB}
-  "${TTS_BUILD_DIR}/src/libtts.a"
-  "${TTS_BUILD_DIR}/ggml/src/libggml.a"
-  "${TTS_BUILD_DIR}/ggml/src/ggml-cpu/libggml-cpu.a"
-  "${TTS_BUILD_DIR}/ggml/src/libggml-base.a"
+  "${TTS_LIB_TTS}"
+  "${TTS_LIB_GGML}"
+  "${TTS_LIB_GGML_CPU}"
+  "${TTS_LIB_GGML_BASE}"
 )
 
 if(APPLE)
   target_link_libraries(tts_addon PRIVATE
-    "${TTS_BUILD_DIR}/ggml/src/ggml-blas/libggml-blas.a"
+    "${TTS_LIB_GGML_BLAS}"
     "-framework Accelerate"
   )
 endif()

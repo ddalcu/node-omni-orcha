@@ -95,13 +95,27 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/deps/TTS.cpp/CMakeLists.txt")
   include(ExternalProject)
   set(TTS_BUILD_DIR "${CMAKE_BINARY_DIR}/tts-build")
 
+  # Platform-aware library paths (Unix: lib*.a, MSVC: *.lib in Release/)
+  set(P "${CMAKE_STATIC_LIBRARY_PREFIX}")
+  set(S "${CMAKE_STATIC_LIBRARY_SUFFIX}")
+  if(MSVC)
+    set(CFG "/Release")
+  else()
+    set(CFG "")
+  endif()
+
+  set(TTS_LIB_TTS      "${TTS_BUILD_DIR}/src${CFG}/${P}tts${S}")
+  set(TTS_LIB_GGML     "${TTS_BUILD_DIR}/ggml/src${CFG}/${P}ggml${S}")
+  set(TTS_LIB_GGML_BASE "${TTS_BUILD_DIR}/ggml/src${CFG}/${P}ggml-base${S}")
+  set(TTS_LIB_GGML_CPU "${TTS_BUILD_DIR}/ggml/src/ggml-cpu${CFG}/${P}ggml-cpu${S}")
+
   set(TTS_PLATFORM_BYPRODUCTS "")
   if(APPLE)
-    list(APPEND TTS_PLATFORM_BYPRODUCTS
-      "${TTS_BUILD_DIR}/ggml/src/ggml-metal/libggml-metal.a"
-      "${TTS_BUILD_DIR}/ggml/src/ggml-blas/libggml-blas.a"
-    )
+    set(TTS_LIB_GGML_METAL "${TTS_BUILD_DIR}/ggml/src/ggml-metal${CFG}/${P}ggml-metal${S}")
+    set(TTS_LIB_GGML_BLAS  "${TTS_BUILD_DIR}/ggml/src/ggml-blas${CFG}/${P}ggml-blas${S}")
+    list(APPEND TTS_PLATFORM_BYPRODUCTS "${TTS_LIB_GGML_METAL}" "${TTS_LIB_GGML_BLAS}")
   endif()
+
   ExternalProject_Add(tts_external
     SOURCE_DIR "${CMAKE_SOURCE_DIR}/deps/TTS.cpp"
     BINARY_DIR "${TTS_BUILD_DIR}"
@@ -113,35 +127,35 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/deps/TTS.cpp/CMakeLists.txt")
       -DTTS_BUILD_EXAMPLES=OFF
       -DCMAKE_CXX_STANDARD=17
     BUILD_BYPRODUCTS
-      "${TTS_BUILD_DIR}/src/libtts.a"
-      "${TTS_BUILD_DIR}/ggml/src/libggml.a"
-      "${TTS_BUILD_DIR}/ggml/src/libggml-base.a"
-      "${TTS_BUILD_DIR}/ggml/src/ggml-cpu/libggml-cpu.a"
+      "${TTS_LIB_TTS}"
+      "${TTS_LIB_GGML}"
+      "${TTS_LIB_GGML_BASE}"
+      "${TTS_LIB_GGML_CPU}"
       ${TTS_PLATFORM_BYPRODUCTS}
     INSTALL_COMMAND ""
   )
 
   # Create imported targets pointing to the build output directly
   add_library(tts_lib STATIC IMPORTED)
-  set_target_properties(tts_lib PROPERTIES IMPORTED_LOCATION "${TTS_BUILD_DIR}/src/libtts.a")
+  set_target_properties(tts_lib PROPERTIES IMPORTED_LOCATION "${TTS_LIB_TTS}")
   add_dependencies(tts_lib tts_external)
 
   add_library(tts_ggml STATIC IMPORTED)
-  set_target_properties(tts_ggml PROPERTIES IMPORTED_LOCATION "${TTS_BUILD_DIR}/ggml/src/libggml.a")
+  set_target_properties(tts_ggml PROPERTIES IMPORTED_LOCATION "${TTS_LIB_GGML}")
   add_dependencies(tts_ggml tts_external)
 
   add_library(tts_ggml_base STATIC IMPORTED)
-  set_target_properties(tts_ggml_base PROPERTIES IMPORTED_LOCATION "${TTS_BUILD_DIR}/ggml/src/libggml-base.a")
+  set_target_properties(tts_ggml_base PROPERTIES IMPORTED_LOCATION "${TTS_LIB_GGML_BASE}")
 
   add_library(tts_ggml_cpu STATIC IMPORTED)
-  set_target_properties(tts_ggml_cpu PROPERTIES IMPORTED_LOCATION "${TTS_BUILD_DIR}/ggml/src/ggml-cpu/libggml-cpu.a")
+  set_target_properties(tts_ggml_cpu PROPERTIES IMPORTED_LOCATION "${TTS_LIB_GGML_CPU}")
 
   if(APPLE)
     add_library(tts_ggml_metal STATIC IMPORTED)
-    set_target_properties(tts_ggml_metal PROPERTIES IMPORTED_LOCATION "${TTS_BUILD_DIR}/ggml/src/ggml-metal/libggml-metal.a")
+    set_target_properties(tts_ggml_metal PROPERTIES IMPORTED_LOCATION "${TTS_LIB_GGML_METAL}")
 
     add_library(tts_ggml_blas STATIC IMPORTED)
-    set_target_properties(tts_ggml_blas PROPERTIES IMPORTED_LOCATION "${TTS_BUILD_DIR}/ggml/src/ggml-blas/libggml-blas.a")
+    set_target_properties(tts_ggml_blas PROPERTIES IMPORTED_LOCATION "${TTS_LIB_GGML_BLAS}")
   endif()
 
   set(TTS_AVAILABLE ON)
@@ -157,7 +171,14 @@ if(TTS_AVAILABLE)
 endif()
 
 # --- qwen3-tts.cpp (pre-built externally, linked directly) ---
-if(EXISTS "${CMAKE_SOURCE_DIR}/deps/qwen3-tts.cpp/build/libqwen3_tts.a")
+set(Q3_DIR "${CMAKE_SOURCE_DIR}/deps/qwen3-tts.cpp")
+if(MSVC)
+  set(Q3_CFG "/Release")
+else()
+  set(Q3_CFG "")
+endif()
+set(Q3_LIB_CHECK "${Q3_DIR}/build${Q3_CFG}/${CMAKE_STATIC_LIBRARY_PREFIX}qwen3_tts${CMAKE_STATIC_LIBRARY_SUFFIX}")
+if(EXISTS "${Q3_LIB_CHECK}")
   add_subdirectory(cpp/tts_qwen3)
   message(STATUS "[node-omni-orcha] qwen3-tts.cpp addon enabled")
 endif()

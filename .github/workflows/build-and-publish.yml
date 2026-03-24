@@ -1,8 +1,8 @@
 name: Build and Publish
 
 on:
-  push:
-    tags: ['v*']
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -45,17 +45,117 @@ jobs:
         with:
           node-version: '25'
 
-      - name: Install CUDA Toolkit
+      # --- ccache for faster rebuilds ---
+      - name: Install ccache (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y ccache
+
+      - name: Install ccache (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ccache
+
+      - name: Install ccache (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: choco install ccache -y
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.os == 'Windows' && 'C:\Users\runneradmin\AppData\Local\ccache' || '~/.cache/ccache' }}
+          key: ccache-${{ matrix.package }}-${{ hashFiles('deps/**/*.cpp', 'deps/**/*.h', 'cpp/**/*.cpp', 'cpp/**/*.h', 'CMakeLists.txt') }}
+          restore-keys: |
+            ccache-${{ matrix.package }}-
+
+      - name: Configure ccache
+        shell: bash
+        run: |
+          ccache --set-config=max_size=1G
+          ccache --set-config=compression=true
+          ccache -z
+
+      # --- CUDA toolkit (cached) ---
+      - name: Cache CUDA Toolkit
         if: matrix.gpu == 'cuda'
+        id: cache-cuda
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.os == 'Windows' && 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA' || '/usr/local/cuda' }}
+          key: cuda-12.6.3-${{ runner.os }}
+
+      - name: Install CUDA Toolkit
+        if: matrix.gpu == 'cuda' && steps.cache-cuda.outputs.cache-hit != 'true'
         uses: Jimver/cuda-toolkit@v0.2.22
         with:
           cuda: '12.6.3'
 
+      - name: Set CUDA env (Linux)
+        if: matrix.gpu == 'cuda' && runner.os == 'Linux'
+        run: |
+          echo "/usr/local/cuda/bin" >> $GITHUB_PATH
+          echo "CUDA_PATH=/usr/local/cuda" >> $GITHUB_ENV
+
+      - name: Set CUDA env (Windows)
+        if: matrix.gpu == 'cuda' && runner.os == 'Windows'
+        shell: bash
+        run: |
+          echo "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/bin" >> $GITHUB_PATH
+          echo "CUDA_PATH=C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6" >> $GITHUB_ENV
+
+      # --- Pre-build qwen3-tts.cpp ---
+      - name: Pre-build qwen3-tts.cpp
+        shell: bash
+        run: |
+          JOBS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo $NUMBER_OF_PROCESSORS)
+          QWEN3_DIR="deps/qwen3-tts.cpp"
+
+          # Step 1: Build ggml
+          GGML_ARGS=(
+            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+            -DBUILD_SHARED_LIBS=OFF
+            -DGGML_BUILD_TESTS=OFF
+          )
+
+          case "${{ matrix.gpu }}" in
+            metal)
+              GGML_ARGS+=(-DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_BLAS=ON -DGGML_BLAS_VENDOR=Apple)
+              ;;
+            cuda)
+              GGML_ARGS+=(-DGGML_METAL=OFF -DGGML_CUDA=ON)
+              ;;
+            *)
+              GGML_ARGS+=(-DGGML_METAL=OFF -DGGML_CUDA=OFF)
+              ;;
+          esac
+
+          cmake -S "$QWEN3_DIR/ggml" -B "$QWEN3_DIR/ggml/build" "${GGML_ARGS[@]}"
+          cmake --build "$QWEN3_DIR/ggml/build" --config Release -j "$JOBS"
+
+          # Step 2: Build qwen3-tts.cpp
+          cmake -S "$QWEN3_DIR" -B "$QWEN3_DIR/build" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DQWEN3_TTS_COREML=OFF
+
+          cmake --build "$QWEN3_DIR/build" --config Release \
+            --target qwen3_tts text_tokenizer tts_transformer audio_tokenizer_encoder audio_tokenizer_decoder \
+            -j "$JOBS"
+
+      # --- Build ---
       - name: Install dependencies
         run: npm install
 
       - name: Build native addons
-        run: npm run build:${{ matrix.gpu }}
+        shell: bash
+        run: |
+          export CMAKE_C_COMPILER_LAUNCHER=ccache
+          export CMAKE_CXX_COMPILER_LAUNCHER=ccache
+          npm run build:${{ matrix.gpu }}
+
+      - name: ccache stats
+        shell: bash
+        run: ccache -s
 
       - name: Package artifacts
         shell: bash
@@ -82,6 +182,13 @@ jobs:
           node-version: '25'
           registry-url: 'https://registry.npmjs.org'
 
+      - name: Generate version
+        id: version
+        run: echo "version=$(date -u +'%Y.%-m%d.%-H%M')" >> "$GITHUB_OUTPUT"
+
+      - name: Set version
+        run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts/
@@ -91,7 +198,7 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          VERSION=$(node -p "require('./package.json').version")
+          VERSION="${{ steps.version.outputs.version }}"
           for dir in artifacts/*/; do
             pkg=$(basename "$dir")
             echo "Publishing @agent-orcha/node-omni-orcha-$pkg@$VERSION"

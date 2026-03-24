@@ -9,6 +9,17 @@ execute_process(
 string(REPLACE "\"" "" NODE_ADDON_API_DIR ${NODE_ADDON_API_DIR})
 
 set(QWEN3_TTS_DIR "${CMAKE_SOURCE_DIR}/deps/qwen3-tts.cpp")
+set(QWEN3_BUILD_DIR "${QWEN3_TTS_DIR}/build")
+set(Q3_GGML_BUILD "${QWEN3_TTS_DIR}/ggml/build")
+
+# Platform-aware library paths (Unix: lib*.a, MSVC: *.lib in Release/)
+set(P "${CMAKE_STATIC_LIBRARY_PREFIX}")
+set(S "${CMAKE_STATIC_LIBRARY_SUFFIX}")
+if(MSVC)
+  set(CFG "/Release")
+else()
+  set(CFG "")
+endif()
 
 add_library(tts_qwen3_addon SHARED
   tts_qwen3_binding.cpp
@@ -33,27 +44,37 @@ target_include_directories(tts_qwen3_addon PRIVATE
   "${QWEN3_TTS_DIR}/ggml/include"
 )
 
-# Link against pre-built static libraries
+# Link against pre-built static libraries (platform-aware paths)
 target_link_libraries(tts_qwen3_addon PRIVATE
   ${CMAKE_JS_LIB}
-  "${QWEN3_TTS_DIR}/build/libqwen3_tts.a"
-  "${QWEN3_TTS_DIR}/build/libtext_tokenizer.a"
-  "${QWEN3_TTS_DIR}/build/libtts_transformer.a"
-  "${QWEN3_TTS_DIR}/build/libaudio_tokenizer_encoder.a"
-  "${QWEN3_TTS_DIR}/build/libaudio_tokenizer_decoder.a"
-  "${QWEN3_TTS_DIR}/ggml/build/src/libggml.a"
-  "${QWEN3_TTS_DIR}/ggml/build/src/libggml-cpu.a"
-  "${QWEN3_TTS_DIR}/ggml/build/src/ggml-metal/libggml-metal.a"
-  "${QWEN3_TTS_DIR}/ggml/build/src/ggml-blas/libggml-blas.a"
-  "${QWEN3_TTS_DIR}/ggml/build/src/libggml-base.a"
+  "${QWEN3_BUILD_DIR}${CFG}/${P}qwen3_tts${S}"
+  "${QWEN3_BUILD_DIR}${CFG}/${P}text_tokenizer${S}"
+  "${QWEN3_BUILD_DIR}${CFG}/${P}tts_transformer${S}"
+  "${QWEN3_BUILD_DIR}${CFG}/${P}audio_tokenizer_encoder${S}"
+  "${QWEN3_BUILD_DIR}${CFG}/${P}audio_tokenizer_decoder${S}"
+  "${Q3_GGML_BUILD}/src${CFG}/${P}ggml${S}"
+  "${Q3_GGML_BUILD}/src${CFG}/${P}ggml-cpu${S}"
+  "${Q3_GGML_BUILD}/src${CFG}/${P}ggml-base${S}"
 )
 
 if(APPLE)
   target_link_libraries(tts_qwen3_addon PRIVATE
+    "${Q3_GGML_BUILD}/src/ggml-metal${CFG}/${P}ggml-metal${S}"
+    "${Q3_GGML_BUILD}/src/ggml-blas${CFG}/${P}ggml-blas${S}"
     "-framework Foundation"
     "-framework Metal"
     "-framework MetalKit"
     "-framework Accelerate"
+  )
+endif()
+
+if(GPU_BACKEND STREQUAL "cuda")
+  find_package(CUDAToolkit REQUIRED)
+  target_link_libraries(tts_qwen3_addon PRIVATE
+    "${Q3_GGML_BUILD}/src/ggml-cuda${CFG}/${P}ggml-cuda${S}"
+    CUDA::cudart
+    CUDA::cublas
+    CUDA::cublasLt
   )
 endif()
 

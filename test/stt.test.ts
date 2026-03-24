@@ -5,13 +5,14 @@ import { readFile } from 'node:fs/promises';
 import { createModel } from '../src/index.ts';
 import { loadBinding } from '../src/binding-loader.ts';
 import type { SttModel } from '../src/types.ts';
+import { saveTestOutput } from './test-output-helper.ts';
 
 // Binding loader test
 describe('STT binding loader', () => {
-  it('loads the stt binding from local build', () => {
-    const binding = loadBinding('stt');
+  it('loads the stt context from unified omni binding', () => {
+    const binding = loadBinding();
     assert.ok(binding, 'Binding should be loaded');
-    assert.equal(typeof binding['createContext'], 'function', 'Should export createContext');
+    assert.equal(typeof binding['createSttContext'], 'function', 'Should export createSttContext');
   });
 });
 
@@ -56,6 +57,10 @@ describe('SttModel', { skip: !hasModel ? 'No whisper model at test/fixtures/whis
     assert.ok(result.segments[0]!.start >= 0, 'Segment should have start time');
     assert.ok(result.segments[0]!.end > result.segments[0]!.start, 'Segment end > start');
     assert.ok(result.segments[0]!.text.length > 0, 'Segment should have text');
+
+    const text = `Text: ${result.text.trim()}\nLanguage: ${result.language}\nSegments:\n${JSON.stringify(result.segments, null, 2)}`;
+    const outPath = saveTestOutput('stt', 'whisper-tiny', { lang: 'en' }, text, '.txt');
+    console.log(`    Saved: ${outPath}`);
   });
 
   it('detects language', { skip: !hasAudio ? 'No test audio' : undefined }, async () => {

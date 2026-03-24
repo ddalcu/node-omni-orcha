@@ -22,8 +22,8 @@ export function createSttModel(modelPath: string): SttModel {
     async load() {
       if (loaded) return;
 
-      const binding = loadBinding('stt');
-      nativeCtx = await (binding['createContext'] as Function)(modelPath);
+      const binding = loadBinding();
+      nativeCtx = await (binding['createSttContext'] as Function)(modelPath);
       loaded = true;
     },
 

@@ -1,7 +1,7 @@
 {
   "name": "node-omni-orcha",
   "version": "0.1.0",
-  "description": "Unified native Node.js bindings for llama.cpp, whisper.cpp, TTS.cpp, and stable-diffusion.cpp",
+  "description": "Unified native Node.js bindings — single omni.node for LLM, STT, TTS, and Image/Video generation",
   "type": "module",
   "main": "src/index.ts",
   "exports": {
@@ -42,7 +42,7 @@
   ],
   "keywords": [
     "llm", "tts", "stt", "whisper", "llama", "stable-diffusion", "flux",
-    "kokoro", "qwen", "voice-cloning", "speech-to-text", "text-to-speech",
+    "qwen", "qwen3-tts", "voice-cloning", "speech-to-text", "text-to-speech",
     "image-generation", "ggml", "gguf", "native", "n-api", "metal", "cuda"
   ],
   "license": "MIT",

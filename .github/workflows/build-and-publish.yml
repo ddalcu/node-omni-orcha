@@ -38,8 +38,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - uses: actions/setup-node@v4
         with:
@@ -63,7 +61,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ runner.os == 'Windows' && 'C:\Users\runneradmin\AppData\Local\ccache' || '~/.cache/ccache' }}
-          key: ccache-${{ matrix.package }}-${{ hashFiles('deps/**/*.cpp', 'deps/**/*.h', 'cpp/**/*.cpp', 'cpp/**/*.h', 'CMakeLists.txt') }}
+          key: ccache-${{ matrix.package }}-${{ hashFiles('engine/**/*.cpp', 'engine/**/*.h', 'engine/**/*.hpp', 'cpp/**/*.cpp', 'cpp/**/*.h', 'CMakeLists.txt') }}
           restore-keys: |
             ccache-${{ matrix.package }}-
 
@@ -101,53 +99,6 @@ jobs:
         run: |
           echo "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/bin" >> $GITHUB_PATH
           echo "CUDA_PATH=C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6" >> $GITHUB_ENV
-
-      # --- Pre-build qwen3-tts.cpp ---
-      - name: Pre-build qwen3-tts.cpp
-        shell: bash
-        run: |
-          JOBS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo $NUMBER_OF_PROCESSORS)
-          QWEN3_DIR="deps/qwen3-tts.cpp"
-
-          # Step 1: Build ggml
-          GGML_ARGS=(
-            -DCMAKE_BUILD_TYPE=Release
-            -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-            -DBUILD_SHARED_LIBS=OFF
-            -DGGML_BUILD_TESTS=OFF
-            -DGGML_BUILD_EXAMPLES=OFF
-          )
-
-          case "${{ matrix.gpu }}" in
-            metal)
-              GGML_ARGS+=(-DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_BLAS=ON -DGGML_BLAS_VENDOR=Apple)
-              ;;
-            cuda)
-              GGML_ARGS+=(-DGGML_METAL=OFF -DGGML_CUDA=ON)
-              ;;
-            *)
-              GGML_ARGS+=(-DGGML_METAL=OFF -DGGML_CUDA=OFF)
-              ;;
-          esac
-
-          cmake -S "$QWEN3_DIR/ggml" -B "$QWEN3_DIR/ggml/build" "${GGML_ARGS[@]}"
-          cmake --build "$QWEN3_DIR/ggml/build" --config Release -j "$JOBS"
-
-          # Step 2: Build qwen3-tts.cpp
-          QWEN3_ARGS=(
-            -DCMAKE_BUILD_TYPE=Release
-            -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-            -DQWEN3_TTS_COREML=OFF
-          )
-          if [[ "$RUNNER_OS" == "Windows" ]]; then
-            QWEN3_ARGS+=("-DCMAKE_CXX_FLAGS=-D_USE_MATH_DEFINES -D_CRT_SECURE_NO_WARNINGS")
-          fi
-
-          cmake -S "$QWEN3_DIR" -B "$QWEN3_DIR/build" "${QWEN3_ARGS[@]}"
-
-          cmake --build "$QWEN3_DIR/build" --config Release \
-            --target qwen3_tts text_tokenizer tts_transformer audio_tokenizer_encoder audio_tokenizer_decoder \
-            -j "$JOBS"
 
       # --- Build ---
       - name: Install dependencies

@@ -1,87 +1,102 @@
 /**
  * Samuel L. Jackson-themed integration test across all engines.
- * Generates output to test-output/<datetime>/
+ * Tests LLM with and without reasoning, TTS voice cloning, STT transcription of TTS output.
+ * Outputs everything to test-output/ with datetime and model params in filenames.
  *
- * Usage:
- *   node scripts/samuel-jackson-test.ts
- *
- * Models used (symlinked/copied from agent-orcha):
- *   LLM:   Qwen3.5-4B-IQ4_NL.gguf
- *   Image: flux-2-klein-4b-Q8_0.gguf + clip_l + t5xxl + vae
- *   STT:   whisper-tiny.bin (optional)
- *   TTS:   kokoro-no-espeak-q8.gguf (Kokoro)
+ * Usage: node scripts/samuel-jackson-test.ts
  */
 
-import { mkdir, writeFile, copyFile, symlink, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import * as path from 'node:path';
 import { createModel } from '../src/index.ts';
-import type { LlmModel, ImageModel } from '../src/types.ts';
+import { saveTestOutput } from '../test/test-output-helper.ts';
+import type { LlmModel, TtsModel, SttModel } from '../src/types.ts';
 
-const ORCHA_MODELS = process.env['ORCHA_MODELS'] || path.resolve(import.meta.dirname!, '..', '..', 'agent-orcha', 'templates', '.models');
-const OUTPUT_BASE = path.resolve(import.meta.dirname!, '..', 'test-output');
+const MODELS_DIR = process.env['MODELS_DIR'] || `${process.env['HOME']}/.orcha/workspace/.models`;
+const FIXTURES = path.resolve(import.meta.dirname!, '..', 'test', 'fixtures');
 
-function timestamp(): string {
-  const d = new Date();
-  return d.toISOString().replace(/[:.]/g, '-').slice(0, 19);
+function resolveModel(...candidates: string[]): string | null {
+  for (const c of candidates) {
+    if (existsSync(c)) return c;
+  }
+  return null;
 }
 
-async function ensureModel(src: string, dest: string): Promise<boolean> {
-  if (existsSync(dest)) return true;
-  if (!existsSync(src)) {
-    console.log(`  SKIP: ${path.basename(src)} not found`);
-    return false;
+// Resample 24kHz WAV → 16kHz 16-bit PCM for whisper
+function wavToWhisperPcm(wav: Buffer): Buffer {
+  const pcm24k = wav.subarray(44); // skip WAV header
+  const samplesIn = pcm24k.length / 2;
+  const ratio = 16000 / 24000;
+  const samplesOut = Math.floor(samplesIn * ratio);
+  const pcm16k = Buffer.alloc(samplesOut * 2);
+  for (let i = 0; i < samplesOut; i++) {
+    const srcIdx = Math.min(Math.floor(i / ratio), samplesIn - 1);
+    pcm16k.writeInt16LE(pcm24k.readInt16LE(srcIdx * 2), i * 2);
   }
-  try {
-    await symlink(src, dest);
-  } catch {
-    // symlink may fail, try copy
-    console.log(`  Copying ${path.basename(src)}...`);
-    await copyFile(src, dest);
-  }
-  return true;
+  return pcm16k;
 }
 
 async function main() {
-  const outDir = path.join(OUTPUT_BASE, timestamp());
-  await mkdir(outDir, { recursive: true });
-  console.log(`Output: ${outDir}\n`);
+  console.log('Samuel L. Jackson Integration Test\n');
 
-  const fixturesDir = path.resolve(import.meta.dirname!, '..', 'test', 'fixtures');
-  await mkdir(fixturesDir, { recursive: true });
+  const ttsWavBuffers: { phrase: string; wav: Buffer; filename: string }[] = [];
 
-  // ─── 1. LLM: Talk like Samuel L. Jackson ───
-  console.log('=== LLM: Talk like Samuel L. Jackson ===');
-  const llmPath = path.join(fixturesDir, 'Qwen3.5-4B-IQ4_NL.gguf');
-  const hasLlm = await ensureModel(
-    path.join(ORCHA_MODELS, 'Qwen3.5-4B-IQ4_NL.gguf'),
-    llmPath,
-  );
+  // ─── 1. LLM ───
 
-  if (hasLlm) {
+  console.log('=== LLM: Samuel L. Jackson (with and without reasoning) ===');
+  const llmPath = resolveModel(path.join(MODELS_DIR, 'Qwen3.5-4B-IQ4_NL.gguf'));
+
+  if (llmPath) {
     try {
       const llm = createModel(llmPath, 'llm');
-      await llm.load({ contextSize: 2048 });
+      await llm.load({ contextSize: 4096 });
 
-      const systemMsg = { role: 'system' as const, content: 'You are Samuel L. Jackson. Respond directly without any thinking or reasoning tags. Be brief, intense, and in character.' };
+      const systemMsg = {
+        role: 'system' as const,
+        content: 'You are Samuel L. Jackson. Be brief, intense, and in character. No hedging, no disclaimers.',
+      };
 
       const prompts = [
         'Give a motivational speech about never giving up. Keep it under 100 words.',
         'What is your opinion on snakes on a plane? Respond in 50 words.',
-        'Give a review of a royale with cheese in 30 words.',
       ];
 
+      // Test WITH capped reasoning (budget=64 tokens, then respond)
+      console.log('\n  --- With reasoning (thinkingBudget=64, maxTokens=512) ---');
       for (let i = 0; i < prompts.length; i++) {
         console.log(`\n  Prompt ${i + 1}: ${prompts[i]!.slice(0, 60)}...`);
+        const opts = { temperature: 0.8, maxTokens: 512, thinkingBudget: 64 };
         const result = await llm.complete(
           [systemMsg, { role: 'user', content: prompts[i]! }],
-          { temperature: 0.8, maxTokens: 512 },
+          opts,
         );
-        console.log(`  Response (${result.usage.outputTokens} tokens):\n    ${result.content.trim().slice(0, 200)}`);
-        await writeFile(
-          path.join(outDir, `llm-samuel-${i + 1}.txt`),
-          `Prompt: ${prompts[i]}\n\nResponse:\n${result.content}\n\nTokens: ${JSON.stringify(result.usage)}`,
+        const contentPreview = result.content.trim().slice(0, 300) || '(empty)';
+        const reasoningLen = result.reasoning?.length ?? 0;
+        console.log(`  Content (${result.content.length} chars): ${contentPreview}`);
+        console.log(`  Reasoning: ${reasoningLen} chars`);
+        console.log(`  Usage: ${result.usage.outputTokens} output tokens`);
+
+        const text = `Prompt: ${prompts[i]}\n\nContent:\n${result.content}\n\nReasoning:\n${result.reasoning ?? ''}\n\nUsage: ${JSON.stringify(result.usage)}`;
+        saveTestOutput('llm', 'Qwen3.5-4B-IQ4_NL', { ...opts, prompt: `samuel-reasoning-${i + 1}` }, text, '.txt');
+      }
+
+      // Test WITHOUT reasoning (thinkingBudget=0, direct response)
+      console.log('\n  --- Without reasoning (thinkingBudget=0, maxTokens=512) ---');
+      for (let i = 0; i < prompts.length; i++) {
+        console.log(`\n  Prompt ${i + 1}: ${prompts[i]!.slice(0, 60)}...`);
+        const opts = { temperature: 0.8, maxTokens: 512, thinkingBudget: 0 };
+        const result = await llm.complete(
+          [systemMsg, { role: 'user', content: prompts[i]! }],
+          opts,
         );
+        const contentPreview = result.content.trim().slice(0, 300) || '(empty)';
+        const reasoningLen = result.reasoning?.length ?? 0;
+        console.log(`  Content (${result.content.length} chars): ${contentPreview}`);
+        console.log(`  Reasoning: ${reasoningLen} chars`);
+        console.log(`  Usage: ${result.usage.outputTokens} output tokens`);
+
+        const text = `Prompt: ${prompts[i]}\n\nContent:\n${result.content}\n\nReasoning:\n${result.reasoning ?? ''}\n\nUsage: ${JSON.stringify(result.usage)}`;
+        saveTestOutput('llm', 'Qwen3.5-4B-IQ4_NL', { ...opts, prompt: `samuel-noreason-${i + 1}` }, text, '.txt');
       }
 
       await llm.unload();
@@ -89,83 +104,70 @@ async function main() {
     } catch (err) {
       console.error('  LLM error:', (err as Error).message);
     }
+  } else {
+    console.log('  SKIP: No Qwen3.5-4B model found\n');
   }
 
-  // ─── 2. Image: Generate Samuel L. Jackson ───
-  console.log('=== Image: Generate Samuel L. Jackson (FLUX.2 Klein 4B) ===');
-  const fluxModelPath = path.join(fixturesDir, 'flux-2-klein-4b-Q8_0.gguf');
-  const llmEncoderPath = path.join(fixturesDir, 'Qwen3-4B-Q8_0.gguf');
-  const vaePath = path.join(fixturesDir, 'flux2-ae.safetensors');
+  // ─── 2. Image ───
 
-  const hasFlux = (
-    await ensureModel(path.join(ORCHA_MODELS, 'flux-2-klein-4b-Q8_0.gguf'), fluxModelPath) &&
-    await ensureModel(path.join(ORCHA_MODELS, 'Qwen3-4B-Q8_0.gguf'), llmEncoderPath) &&
-    await ensureModel(path.join(ORCHA_MODELS, 'flux2-ae.safetensors'), vaePath)
-  );
+  console.log('=== Image: Generate Samuel L. Jackson (FLUX 2 Klein) ===');
+  const fluxDir = path.join(MODELS_DIR, 'flux2-klein');
+  const fluxModel = path.join(fluxDir, 'flux-2-klein-4b-Q4_K_M.gguf');
+  const fluxLlm = path.join(fluxDir, 'Qwen3-4B-Q4_K_M.gguf');
+  const fluxVae = path.join(fluxDir, 'flux2-vae.safetensors');
 
-  if (hasFlux) {
+  if (existsSync(fluxModel) && existsSync(fluxLlm) && existsSync(fluxVae)) {
     try {
-      const img = createModel(fluxModelPath, 'image');
-      await img.load({
-        llmPath: llmEncoderPath,
-        vaePath,
-        offloadToCpu: true,
-        flashAttn: true,
-      });
+      const img = createModel(fluxModel, 'image');
+      await img.load({ llmPath: fluxLlm, vaePath: fluxVae, keepVaeOnCpu: true, flashAttn: true });
 
-      // Generate one image per context to avoid sd.cpp context reuse crash
-      const imagePrompts = [
-        'A cartoon caricature of Samuel L. Jackson looking intense, bright colors, comic style',
-      ];
+      const prompt = 'A cartoon caricature of Samuel L. Jackson looking intense, bright colors, comic style';
+      const opts = { width: 512, height: 512, steps: 4, cfgScale: 1.0, sampleMethod: 'euler' as const };
 
-      for (let i = 0; i < imagePrompts.length; i++) {
-        console.log(`\n  Generating image ${i + 1}: ${imagePrompts[i]!.slice(0, 50)}...`);
-        const startTime = Date.now();
-        const png = await img.generate(imagePrompts[i]!, {
-          width: 512,
-          height: 512,
-          steps: 4,
-          cfgScale: 1.0,
-          sampleMethod: 'euler',
-        });
-        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-        const filename = `image-samuel-${i + 1}.png`;
-        await writeFile(path.join(outDir, filename), png);
-        console.log(`  Saved ${filename} (${(png.length / 1024).toFixed(0)}KB, ${elapsed}s)`);
-      }
+      console.log(`\n  Generating: ${prompt.slice(0, 50)}...`);
+      const startTime = Date.now();
+      const png = await img.generate(prompt, opts);
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+
+      const outPath = saveTestOutput('image', 'flux2-klein-4b-Q4_K_M', opts, png, '.png');
+      console.log(`  Saved: ${outPath} (${(png.length / 1024).toFixed(0)}KB, ${elapsed}s)`);
 
       await img.unload();
       console.log('\n  Image done.\n');
     } catch (err) {
       console.error('  Image error:', (err as Error).message);
     }
+  } else {
+    console.log('  SKIP: FLUX 2 Klein models not found\n');
   }
 
-  // ─── 3. TTS: Speak like Samuel L. Jackson (before STT so we can transcribe it back) ───
-  console.log('=== TTS: Speak like Samuel L. Jackson (Kokoro) ===');
-  const kokoroPath = path.join(fixturesDir, 'kokoro-no-espeak-q8.gguf');
-  let ttsWavBuffer: Buffer | null = null;
-  const ttsPhrase = 'Say what again. I dare you, I double dare you. Say what one more time.';
+  // ─── 3. TTS ───
 
-  if (existsSync(kokoroPath)) {
+  console.log('=== TTS: Voice Clone (Samuel L. Jackson) ===');
+  const qwen3TtsDir = resolveModel(path.join(MODELS_DIR, 'qwen3-tts'));
+  const samuelWav = path.join(FIXTURES, 'Samuel.wav');
+
+  if (qwen3TtsDir && existsSync(samuelWav)) {
     try {
-      const tts = createModel(kokoroPath, 'tts');
+      const tts = createModel(qwen3TtsDir, 'tts');
       await tts.load();
 
-      const ttsPrompts = [
-        ttsPhrase,
+      const phrases = [
+        'I have had it with these snakes on this plane. Everybody strap in, I am about to open some windows.',
         'English, do you speak it? Then you know what I am saying.',
       ];
 
-      for (let i = 0; i < ttsPrompts.length; i++) {
-        console.log(`\n  Speaking ${i + 1}: ${ttsPrompts[i]!.slice(0, 50)}...`);
+      for (let i = 0; i < phrases.length; i++) {
+        console.log(`\n  Speaking ${i + 1}: ${phrases[i]!.slice(0, 50)}...`);
         const startTime = Date.now();
-        const wav = await tts.speak(ttsPrompts[i]!);
+        const wav = await tts.speak(phrases[i]!, { referenceAudioPath: samuelWav });
         const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-        const filename = `tts-samuel-${i + 1}.wav`;
-        await writeFile(path.join(outDir, filename), wav);
-        console.log(`  Saved ${filename} (${(wav.length / 1024).toFixed(0)}KB, ${elapsed}s)`);
-        if (i === 0) ttsWavBuffer = wav;
+        const durationSec = ((wav.length - 44) / (24000 * 2)).toFixed(1);
+
+        const outPath = saveTestOutput('tts', 'qwen3-0.6b-f16', { voice: `samuel-clone-${i + 1}` }, wav, '.wav');
+        console.log(`  Saved: ${outPath} (${(wav.length / 1024).toFixed(0)}KB, ${durationSec}s audio, ${elapsed}s)`);
+
+        ttsWavBuffers.push({ phrase: phrases[i]!, wav, filename: path.basename(outPath) });
       }
 
       await tts.unload();
@@ -174,45 +176,40 @@ async function main() {
       console.error('  TTS error:', (err as Error).message);
     }
   } else {
-    console.log('  SKIP: No Kokoro model. Download from: https://huggingface.co/mmwillet2/Kokoro_GGUF\n');
+    console.log('  SKIP: Qwen3 TTS models or Samuel.wav not found\n');
   }
 
-  // ─── 4. STT: Transcribe the TTS output back ───
-  console.log('=== STT: Transcribe TTS Output (Whisper Tiny) ===');
-  const whisperPath = path.join(fixturesDir, 'whisper-tiny.bin');
-  if (existsSync(whisperPath) && ttsWavBuffer) {
+  // ─── 4. STT: Transcribe the TTS output ───
+
+  console.log('=== STT: Transcribe TTS Output (Whisper) ===');
+  const whisperPath = path.join(FIXTURES, 'whisper-tiny.bin');
+
+  if (existsSync(whisperPath) && ttsWavBuffers.length > 0) {
     try {
       const stt = createModel(whisperPath, 'stt');
       await stt.load();
 
-      // Extract PCM from WAV and resample 24kHz → 16kHz
-      // WAV header is 44 bytes, then 16-bit signed PCM data
-      const pcm24k = ttsWavBuffer.subarray(44);
-      const samplesIn = pcm24k.length / 2;
-      const ratio = 16000 / 24000; // 2/3
-      const samplesOut = Math.floor(samplesIn * ratio);
-      const pcm16k = Buffer.alloc(samplesOut * 2);
+      for (const { phrase, wav, filename } of ttsWavBuffers) {
+        const pcm16k = wavToWhisperPcm(wav);
+        console.log(`\n  Transcribing: ${filename}`);
+        console.log(`  Original:     "${phrase}"`);
 
-      for (let i = 0; i < samplesOut; i++) {
-        const srcIdx = Math.floor(i / ratio);
-        const clamped = Math.min(srcIdx, samplesIn - 1);
-        pcm16k.writeInt16LE(pcm24k.readInt16LE(clamped * 2), i * 2);
+        const result = await stt.transcribe(pcm16k, { language: 'en' });
+        console.log(`  Transcribed:  "${result.text.trim()}"`);
+        console.log(`  Language: ${result.language}, Segments: ${result.segments.length}`);
+
+        const text = [
+          `Source: ${filename}`,
+          `Original:      ${phrase}`,
+          `Transcription: ${result.text.trim()}`,
+          `Language: ${result.language}`,
+          `Segments:\n${JSON.stringify(result.segments, null, 2)}`,
+        ].join('\n');
+        saveTestOutput('stt', 'whisper-tiny', { lang: 'en', source: filename.replace('.wav', '') }, text, '.txt');
       }
 
-      console.log(`  Original TTS: "${ttsPhrase}"`);
-      console.log(`  Resampled: ${samplesIn} samples @24kHz → ${samplesOut} samples @16kHz`);
-
-      const result = await stt.transcribe(pcm16k, { language: 'en' });
-      console.log(`  Transcribed:  "${result.text.trim()}"`);
-      console.log(`  Language: ${result.language}, Segments: ${result.segments.length}`);
-
-      await writeFile(
-        path.join(outDir, 'stt-result.txt'),
-        `Original:      ${ttsPhrase}\nTranscription: ${result.text.trim()}\nLanguage: ${result.language}\nSegments: ${JSON.stringify(result.segments, null, 2)}`,
-      );
-
       await stt.unload();
-      console.log('  STT done.\n');
+      console.log('\n  STT done.\n');
     } catch (err) {
       console.error('  STT error:', (err as Error).message);
     }
@@ -222,54 +219,22 @@ async function main() {
     console.log('  SKIP: No TTS output to transcribe.\n');
   }
 
-  // ─── 5. Qwen3 TTS: Voice cloning ───
-  console.log('=== Qwen3 TTS: Voice Clone (Samuel L. Jackson) ===');
-  const qwen3ModelsDir = path.resolve(import.meta.dirname!, '..', 'deps', 'qwen3-tts.cpp', 'models');
-  const qwen3ModelFile = path.join(qwen3ModelsDir, 'qwen3-tts-0.6b-f16.gguf');
-  const samuelRefAudio = path.join(fixturesDir, 'Samuel.wav');
-
-  if (existsSync(qwen3ModelFile) && existsSync(samuelRefAudio)) {
-    try {
-      const tts = createModel(qwen3ModelsDir, 'tts');
-      await tts.load({ engine: 'qwen3' });
-
-      console.log(`  Cloning Samuel L. Jackson's voice from: Samuel.wav`);
-      const startTime = Date.now();
-      const wav = await tts.speak(
-        'I have had it with these snakes on this plane. Everybody strap in, I am about to open some windows.',
-        { referenceAudioPath: samuelRefAudio },
-      );
-      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-      const filename = 'tts-qwen3-cloned.wav';
-      await writeFile(path.join(outDir, filename), wav);
-      console.log(`  Saved ${filename} (${(wav.length / 1024).toFixed(0)}KB, ${elapsed}s)`);
-
-      // Also generate without cloning for comparison
-      const wav2 = await tts.speak('This is Qwen3 TTS without voice cloning.');
-      await writeFile(path.join(outDir, 'tts-qwen3-default.wav'), wav2);
-      console.log(`  Saved tts-qwen3-default.wav (${(wav2.length / 1024).toFixed(0)}KB)`);
-
-      await tts.unload();
-      console.log('  Qwen3 TTS done.\n');
-    } catch (err) {
-      console.error('  Qwen3 TTS error:', (err as Error).message);
-    }
-  } else {
-    if (!existsSync(qwen3ModelFile)) {
-      console.log('  SKIP: No Qwen3 TTS models. Run setup in deps/qwen3-tts.cpp/\n');
-    } else {
-      console.log('  SKIP: No Samuel.wav reference audio at test/fixtures/Samuel.wav\n');
-    }
-  }
-
   // ─── Summary ───
-  console.log('=== Summary ===');
-  console.log(`Output directory: ${outDir}`);
-  const files = await import('node:fs/promises').then(fs => fs.readdir(outDir));
-  for (const f of files) {
-    const s = await stat(path.join(outDir, f));
-    console.log(`  ${f} (${(s.size / 1024).toFixed(0)}KB)`);
-  }
+
+  console.log('=== Output Files ===');
+  const { readdirSync, statSync } = await import('node:fs');
+  try {
+    for (const f of readdirSync('test-output').sort()) {
+      if (f.startsWith('.')) continue;
+      const s = statSync(path.join('test-output', f));
+      if (s.isDirectory()) {
+        console.log(`  ${f}/`);
+      } else {
+        console.log(`  ${f} (${(s.size / 1024).toFixed(0)}KB)`);
+      }
+    }
+  } catch { /* empty */ }
+
   console.log('\nDone!');
 }
 

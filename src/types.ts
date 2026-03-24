@@ -66,7 +66,7 @@ export interface CompletionOptions {
   signal?: AbortSignal;
   tools?: ToolDefinition[];
   toolChoice?: 'auto' | 'required' | 'none';
-  /** Max tokens the model can spend on reasoning/thinking before being forced to respond. -1 = unlimited (default). */
+  /** Control reasoning/thinking. -1 = unlimited (default), 0 = disabled, N>0 = max N tokens of reasoning before responding. */
   thinkingBudget?: number;
 }
 
@@ -243,25 +243,14 @@ export interface SttModel {
 
 // --- TTS Types ---
 
-export const TTS_ENGINES = {
-  kokoro: 'kokoro',
-  qwen3: 'qwen3',
-} as const;
-
-export type TtsEngine = (typeof TTS_ENGINES)[keyof typeof TTS_ENGINES];
-
 export interface TtsLoadOptions {
-  /** TTS engine: 'kokoro' (Kokoro/Parler/Dia) or 'qwen3' (Qwen3-TTS with voice cloning) */
-  engine?: TtsEngine;
+  /** Reserved for future use */
 }
 
 export interface SpeakOptions {
-  /** Voice name — for Kokoro: 'af_heart', 'am_adam', etc. */
-  voice?: string;
-  speed?: number;
-  /** Path to reference audio WAV for voice cloning (Qwen3 engine only, 24kHz mono recommended) */
+  /** Path to reference audio WAV for voice cloning (24kHz mono recommended) */
   referenceAudioPath?: string;
-  /** Sampling temperature (Qwen3: default 0.9, Kokoro: default 1.0) */
+  /** Sampling temperature (default 0.9) */
   temperature?: number;
 }
 
@@ -269,8 +258,6 @@ export interface TtsModel {
   readonly type: 'tts';
   readonly modelPath: string;
   readonly loaded: boolean;
-
-  readonly engine: TtsEngine;
 
   load(options?: TtsLoadOptions): Promise<void>;
   speak(text: string, options?: SpeakOptions): Promise<Buffer>;

@@ -72,17 +72,17 @@ jobs:
           ccache --set-config=compression=true
           ccache -z
 
-      # --- CUDA toolkit (cached) ---
-      - name: Cache CUDA Toolkit
-        if: matrix.gpu == 'cuda'
+      # --- CUDA toolkit (cached on Linux, always fresh on Windows) ---
+      - name: Cache CUDA Toolkit (Linux)
+        if: matrix.gpu == 'cuda' && runner.os == 'Linux'
         id: cache-cuda
         uses: actions/cache@v4
         with:
-          path: ${{ runner.os == 'Windows' && 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA' || '/usr/local/cuda' }}
+          path: /usr/local/cuda
           key: cuda-12.6.3-${{ runner.os }}
 
       - name: Install CUDA Toolkit
-        if: matrix.gpu == 'cuda' && steps.cache-cuda.outputs.cache-hit != 'true'
+        if: matrix.gpu == 'cuda' && (runner.os == 'Windows' || steps.cache-cuda.outputs.cache-hit != 'true')
         uses: Jimver/cuda-toolkit@v0.2.22
         with:
           cuda: '12.6.3'

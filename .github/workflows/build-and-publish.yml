@@ -150,6 +150,8 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts/
+          pattern: '{darwin-*,linux-*,win32-*}'
+          merge-multiple: false
 
       - name: Publish platform packages
         shell: bash
@@ -159,6 +161,11 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           for dir in artifacts/*/; do
             pkg=$(basename "$dir")
+            # Skip directories that aren't platform packages
+            if [[ ! -f "$dir/package.json" ]]; then
+              echo "Skipping $pkg (no package.json)"
+              continue
+            fi
             echo "Publishing @agent-orcha/node-omni-orcha-$pkg@$VERSION"
             cd "$dir"
             node -e "

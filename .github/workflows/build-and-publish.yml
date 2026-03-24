@@ -140,7 +140,7 @@ jobs:
             -DQWEN3_TTS_COREML=OFF
           )
           if [[ "$RUNNER_OS" == "Windows" ]]; then
-            QWEN3_ARGS+=("-DCMAKE_CXX_FLAGS=/D_USE_MATH_DEFINES /D_CRT_SECURE_NO_WARNINGS")
+            QWEN3_ARGS+=("-DCMAKE_CXX_FLAGS=-D_USE_MATH_DEFINES -D_CRT_SECURE_NO_WARNINGS")
           fi
 
           cmake -S "$QWEN3_DIR" -B "$QWEN3_DIR/build" "${QWEN3_ARGS[@]}"

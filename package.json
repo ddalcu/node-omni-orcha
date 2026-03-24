@@ -1,5 +1,5 @@
 {
-  "name": "node-omni-orcha",
+  "name": "@agent-orcha/node-omni-orcha",
   "version": "0.1.0",
   "description": "Unified native Node.js bindings — single omni.node for LLM, STT, TTS, and Image/Video generation",
   "type": "module",
@@ -19,7 +19,7 @@
     "clean": "cmake-js clean",
     "test": "node --test test/*.test.ts",
     "test:llm": "node --test test/llm.test.ts",
-    "test:unit": "node --test test/model-detector.test.ts test/gguf-reader.test.ts",
+    "test:unit": "node --test test/gguf-reader.test.ts test/binding-loader.test.ts",
     "test:samuel": "node scripts/samuel-jackson-test.ts",
     "serve": "MODELS_DIR=$HOME/.orcha/workspace/.models LLM_MODEL=$HOME/.orcha/workspace/.models/Qwen3.5-4B-IQ4_NL.gguf TTS_MODEL=$HOME/.orcha/workspace/.models/qwen3-tts node server.ts"
   },

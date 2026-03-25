@@ -2,6 +2,10 @@
 #include "common/error_helpers.h"
 #include "stable-diffusion.h"
 
+// stb_image for decoding init images (PNG/JPEG buffers)
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
 // stb_image_write for PNG encoding
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
@@ -105,6 +109,7 @@ protected:
   void Execute() override {
     sd_ctx_params_t params;
     sd_ctx_params_init(&params);
+    params.free_params_immediately = false;
 
     bool is_flux2 = !llm_path_.empty();
     bool is_flux1 = !clip_l_path_.empty() || !t5xxl_path_.empty();
@@ -356,7 +361,8 @@ public:
     sample_method_t sample_method, scheduler_t scheduler,
     int clip_skip, bool scheduler_specified,
     int high_noise_steps, float high_noise_cfg_scale,
-    sample_method_t high_noise_sample_method, bool high_noise_specified
+    sample_method_t high_noise_sample_method, bool high_noise_specified,
+    std::vector<uint8_t> init_image_data, std::vector<uint8_t> end_image_data
   ) : Napi::AsyncWorker(env),
       deferred_(Napi::Promise::Deferred::New(env)),
       ctx_(ctx), prompt_(std::move(prompt)),
@@ -369,7 +375,9 @@ public:
       high_noise_steps_(high_noise_steps),
       high_noise_cfg_scale_(high_noise_cfg_scale),
       high_noise_sample_method_(high_noise_sample_method),
-      high_noise_specified_(high_noise_specified) {}
+      high_noise_specified_(high_noise_specified),
+      init_image_data_(std::move(init_image_data)),
+      end_image_data_(std::move(end_image_data)) {}
 
   Napi::Promise Promise() { return deferred_.Promise(); }
 
@@ -402,8 +410,41 @@ protected:
       vparams.high_noise_sample_params.sample_method = high_noise_sample_method_;
     }
 
+    // Decode init image (I2V / TI2V — first frame)
+    int init_w = 0, init_h = 0, init_c = 0;
+    uint8_t* init_pixels = nullptr;
+    if (!init_image_data_.empty()) {
+      init_pixels = stbi_load_from_memory(
+        init_image_data_.data(), (int)init_image_data_.size(),
+        &init_w, &init_h, &init_c, 3);
+      if (init_pixels) {
+        vparams.init_image.width = init_w;
+        vparams.init_image.height = init_h;
+        vparams.init_image.channel = 3;
+        vparams.init_image.data = init_pixels;
+      }
+    }
+
+    // Decode end image (FLF2V — last frame)
+    int end_w = 0, end_h = 0, end_c = 0;
+    uint8_t* end_pixels = nullptr;
+    if (!end_image_data_.empty()) {
+      end_pixels = stbi_load_from_memory(
+        end_image_data_.data(), (int)end_image_data_.size(),
+        &end_w, &end_h, &end_c, 3);
+      if (end_pixels) {
+        vparams.end_image.width = end_w;
+        vparams.end_image.height = end_h;
+        vparams.end_image.channel = 3;
+        vparams.end_image.data = end_pixels;
+      }
+    }
+
     int num_frames_out = 0;
     sd_image_t* frames = generate_video(ctx_, &vparams, &num_frames_out);
+
+    if (init_pixels) stbi_image_free(init_pixels);
+    if (end_pixels) stbi_image_free(end_pixels);
     if (!frames || num_frames_out <= 0) {
       SetError("Video generation failed");
       return;
@@ -468,6 +509,8 @@ private:
   float high_noise_cfg_scale_;
   sample_method_t high_noise_sample_method_;
   bool high_noise_specified_;
+  std::vector<uint8_t> init_image_data_;
+  std::vector<uint8_t> end_image_data_;
   VideoResult result_;
 };
 
@@ -529,11 +572,26 @@ Napi::Value ImageContext::GenerateVideo(const Napi::CallbackInfo& info) {
     }
   }
 
+  // Extract init/end image buffers for I2V / TI2V / FLF2V
+  std::vector<uint8_t> initImageData, endImageData;
+  if (info.Length() >= 2 && info[1].IsObject()) {
+    Napi::Object opts = info[1].As<Napi::Object>();
+    if (opts.Has("initImage") && opts.Get("initImage").IsBuffer()) {
+      auto buf = opts.Get("initImage").As<Napi::Buffer<uint8_t>>();
+      initImageData.assign(buf.Data(), buf.Data() + buf.Length());
+    }
+    if (opts.Has("endImage") && opts.Get("endImage").IsBuffer()) {
+      auto buf = opts.Get("endImage").As<Napi::Buffer<uint8_t>>();
+      endImageData.assign(buf.Data(), buf.Data() + buf.Length());
+    }
+  }
+
   auto* worker = new GenerateVideoWorker(
     env, ctx_, std::move(prompt), std::move(negativePrompt),
     width, height, videoFrames, cfgScale, flowShift, steps, seed,
     sampleMethod, scheduler, clipSkip, schedulerSpecified,
-    highNoiseSteps, highNoiseCfgScale, highNoiseSampleMethod, highNoiseSpecified
+    highNoiseSteps, highNoiseCfgScale, highNoiseSampleMethod, highNoiseSpecified,
+    std::move(initImageData), std::move(endImageData)
   );
   worker->Queue();
   return worker->Promise();

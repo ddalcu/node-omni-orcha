@@ -101,7 +101,7 @@ export function saveVideoFrames(
     writeFileSync(join(outDir, `frame_${String(i).padStart(4, '0')}.png`), frames[i]!);
   }
 
-  // Try encoding MP4
+  // Encode MP4 with ffmpeg (WAN 2.2 generates at ~16fps)
   try {
     const { execSync } = require('node:child_process') as typeof import('node:child_process');
     const mp4Path = join(OUTPUT_DIR, `${dirName}.mp4`);
@@ -112,7 +112,7 @@ export function saveVideoFrames(
     const { statSync } = require('node:fs') as typeof import('node:fs');
     console.log(`    MP4: ${mp4Path} (${(statSync(mp4Path).size / 1024).toFixed(0)}KB)`);
   } catch {
-    // ffmpeg not available
+    console.log('    MP4: skipped (ffmpeg not found — install with: winget install Gyan.FFmpeg)');
   }
 
   return outDir;

@@ -192,11 +192,15 @@ export interface VideoOptions {
   scheduler?: Scheduler;
   /** CLIP skip layers */
   clipSkip?: number;
-  /** High-noise sampling steps (WAN2.2 turbo) */
+  /** Init image for I2V / TI2V — PNG or JPEG buffer used as first frame */
+  initImage?: Buffer;
+  /** End image for FLF2V (first-last-frame-to-video) — PNG or JPEG buffer */
+  endImage?: Buffer;
+  /** High-noise sampling steps (WAN2.2 MoE / turbo) */
   highNoiseSteps?: number;
-  /** High-noise CFG scale (WAN2.2 turbo) */
+  /** High-noise CFG scale (WAN2.2 MoE / turbo) */
   highNoiseCfgScale?: number;
-  /** High-noise sampling method (WAN2.2 turbo) */
+  /** High-noise sampling method (WAN2.2 MoE / turbo) */
   highNoiseSampleMethod?: SampleMethod;
 }
 

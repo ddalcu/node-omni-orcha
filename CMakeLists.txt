@@ -172,6 +172,7 @@ target_include_directories(omni PRIVATE
   ${CMAKE_SOURCE_DIR}/engine/stt
   ${CMAKE_SOURCE_DIR}/engine/tts
   ${CMAKE_SOURCE_DIR}/engine/diffusion
+  ${CMAKE_SOURCE_DIR}/engine/vendor/stb
 )
 
 target_link_libraries(omni PRIVATE

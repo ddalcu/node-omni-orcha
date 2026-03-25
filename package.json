@@ -21,7 +21,7 @@
     "test:llm": "node --test test/llm.test.ts",
     "test:unit": "node --test test/gguf-reader.test.ts test/binding-loader.test.ts",
     "test:samuel": "node scripts/samuel-jackson-test.ts",
-    "serve": "MODELS_DIR=$HOME/.orcha/workspace/.models LLM_MODEL=$HOME/.orcha/workspace/.models/Qwen3.5-4B-IQ4_NL.gguf TTS_MODEL=$HOME/.orcha/workspace/.models/qwen3-tts node server.ts"
+    "serve": "node server.ts"
   },
   "dependencies": {
     "node-addon-api": "^8.3.1"

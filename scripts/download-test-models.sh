@@ -136,7 +136,7 @@ if $ALL || has_flag "--video" "$@"; then
   download_if_missing \
     "https://huggingface.co/city96/umt5-xxl-encoder-gguf/resolve/main/umt5-xxl-encoder-Q8_0.gguf" \
     "$MODELS_DIR/wan22-5b/umt5-xxl-encoder-Q8_0.gguf" \
-    "UMT5-XXL encoder Q8_0 (~1.2GB)"
+    "UMT5-XXL encoder Q8_0 (~6GB)"
 fi
 
 # ─── Summary ───

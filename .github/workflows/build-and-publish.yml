@@ -146,6 +146,12 @@ jobs:
           node-version: '25'
           registry-url: 'https://registry.npmjs.org'
 
+      - name: Install dependencies
+        run: npm install
+
+      - name: Compile TypeScript
+        run: npm run build:ts
+
       - name: Generate version
         id: version
         run: echo "version=$(date -u +'%Y.%-m%d.%-H%M')" >> "$GITHUB_OUTPUT"
@@ -182,6 +188,18 @@ jobs:
             npm publish --access public --provenance
             cd - > /dev/null
           done
+
+      - name: Align optionalDependencies versions
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          node -e "
+            const fs = require('fs');
+            const p = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            for (const k of Object.keys(p.optionalDependencies || {})) {
+              p.optionalDependencies[k] = '$VERSION';
+            }
+            fs.writeFileSync('package.json', JSON.stringify(p, null, 2) + '\n');
+          "
 
       - name: Publish main package
         env:

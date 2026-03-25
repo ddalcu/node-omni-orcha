@@ -3,9 +3,13 @@
   "version": "0.1.0",
   "description": "Unified native Node.js bindings — single omni.node for LLM, STT, TTS, and Image/Video generation",
   "type": "module",
-  "main": "src/index.ts",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
   },
   "engines": {
     "node": ">=25.0.0"
@@ -21,6 +25,8 @@
     "test:llm": "node --test test/llm.test.ts",
     "test:unit": "node --test test/gguf-reader.test.ts test/binding-loader.test.ts",
     "test:samuel": "node scripts/samuel-jackson-test.ts",
+    "build:ts": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "npm run build:ts",
     "serve": "node server.ts"
   },
   "dependencies": {
@@ -29,8 +35,13 @@
   "optionalDependencies": {
     "@agent-orcha/node-omni-orcha-darwin-arm64": "0.1.0",
     "@agent-orcha/node-omni-orcha-linux-x64": "0.1.0",
+    "@agent-orcha/node-omni-orcha-linux-x64-cuda": "0.1.0",
     "@agent-orcha/node-omni-orcha-linux-arm64": "0.1.0",
-    "@agent-orcha/node-omni-orcha-win32-x64": "0.1.0"
+    "@agent-orcha/node-omni-orcha-win32-x64": "0.1.0",
+    "@agent-orcha/node-omni-orcha-win32-x64-cuda": "0.1.0"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "devDependencies": {
     "@types/node": "^25.0.0",
@@ -38,6 +49,7 @@
     "typescript": "^5.8.0"
   },
   "files": [
+    "dist/",
     "src/"
   ],
   "keywords": [

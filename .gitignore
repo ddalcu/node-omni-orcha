@@ -1,6 +1,7 @@
 .claude
 node_modules/
 build/
+dist/
 prebuilds/
 
 # Test model files (large, downloaded via scripts/)

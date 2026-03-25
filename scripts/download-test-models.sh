@@ -44,21 +44,21 @@ if has_flag "--all" "$@"; then ALL=true; fi
 echo "=== LLM: TinyLlama 1.1B (~250MB) ==="
 download_if_missing \
   "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf" \
-  "$MODELS_DIR/tinyllama.gguf" \
+  "$MODELS_DIR/tinyllama/tinyllama.gguf" \
   "TinyLlama 1.1B Q4_K_M"
 
 echo ""
 echo "=== LLM: Qwen3.5-4B (~2.5GB) ==="
 download_if_missing \
   "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-IQ4_NL.gguf" \
-  "$MODELS_DIR/Qwen3.5-4B-IQ4_NL.gguf" \
+  "$MODELS_DIR/qwen3-5-4b/Qwen3.5-4B-IQ4_NL.gguf" \
   "Qwen3.5-4B IQ4_NL"
 
 echo ""
 echo "=== STT: Whisper Tiny (~75MB) ==="
 download_if_missing \
   "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin" \
-  "$MODELS_DIR/whisper-tiny.bin" \
+  "$MODELS_DIR/whisper-tiny/whisper-tiny.bin" \
   "Whisper tiny"
 
 # Generate test audio (silence) for STT tests
@@ -144,12 +144,11 @@ fi
 echo ""
 echo "Done. Models directory: $MODELS_DIR"
 echo ""
-ls -lhS "$MODELS_DIR"/*.gguf "$MODELS_DIR"/*.bin 2>/dev/null || true
-for subdir in qwen3-tts flux2-klein wan22-5b; do
+for subdir in tinyllama qwen3-5-4b whisper-tiny qwen3-tts flux2-klein wan22-5b; do
   if [ -d "$MODELS_DIR/$subdir" ]; then
-    echo ""
     echo "$subdir/:"
     ls -lhS "$MODELS_DIR/$subdir/" 2>/dev/null || true
+    echo ""
   fi
 done
 

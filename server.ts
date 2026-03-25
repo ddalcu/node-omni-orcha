@@ -6,7 +6,7 @@ import type { LlmModel, TtsModel, ImageModel, ChatMessage } from './src/types.ts
 const PORT = Number(process.env.PORT ?? 3333);
 const MODELS_DIR = process.env.MODELS_DIR ?? `${process.env.HOME}/.orcha/workspace/.models`;
 
-const LLM_PATH = process.env.LLM_MODEL ?? `${MODELS_DIR}/Qwen3.5-4B-IQ4_NL.gguf`;
+const LLM_PATH = process.env.LLM_MODEL ?? `${MODELS_DIR}/qwen3-5-4b/Qwen3.5-4B-IQ4_NL.gguf`;
 const TTS_PATH = process.env.TTS_MODEL ?? `${MODELS_DIR}/qwen3-tts`;
 
 // FLUX 2 Klein (image generation)

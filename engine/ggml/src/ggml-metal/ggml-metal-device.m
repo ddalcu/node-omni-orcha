@@ -608,8 +608,13 @@ void ggml_metal_rsets_free(ggml_metal_rsets_t rsets) {
         return;
     }
 
-    // note: if you hit this assert, most likely you haven't deallocated all Metal resources before exiting
-    GGML_ASSERT([rsets->data count] == 0);
+    // Gracefully handle leftover residency sets during process exit
+    // (e.g. Node.js --watch restart or unclean shutdown before models are unloaded)
+    if ([rsets->data count] != 0) {
+        GGML_LOG_WARN("%s: %lu Metal residency set(s) still active during cleanup — forcing release\n",
+                      __func__, (unsigned long)[rsets->data count]);
+        [rsets->data removeAllObjects];
+    }
 
     atomic_store_explicit(&rsets->d_stop, true, memory_order_relaxed);
 

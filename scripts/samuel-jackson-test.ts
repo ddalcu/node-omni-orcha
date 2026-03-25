@@ -44,7 +44,7 @@ async function main() {
   // ─── 1. LLM ───
 
   console.log('=== LLM: Samuel L. Jackson (with and without reasoning) ===');
-  const llmPath = resolveModel(path.join(MODELS_DIR, 'Qwen3.5-4B-IQ4_NL.gguf'));
+  const llmPath = resolveModel(path.join(MODELS_DIR, 'qwen3-5-4b', 'Qwen3.5-4B-IQ4_NL.gguf'));
 
   if (llmPath) {
     try {

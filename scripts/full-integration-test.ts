@@ -41,7 +41,7 @@ function skip(name: string, reason: string) {
 
 // ─── LLM: Qwen3.5-4B ───
 
-const llmPath = path.join(MODELS, 'Qwen3.5-4B-IQ4_NL.gguf');
+const llmPath = path.join(MODELS, 'qwen3-5-4b', 'Qwen3.5-4B-IQ4_NL.gguf');
 
 if (existsSync(llmPath)) {
   await run('LLM — Qwen3.5-4B completion', async () => {

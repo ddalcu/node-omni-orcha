@@ -44,7 +44,8 @@ struct GenerationResult {
 };
 
 // Token callback: called for each generated token piece. Return false to abort.
-using token_callback_t = std::function<bool(const std::string& piece)>;
+// is_thinking: true when the token belongs to a <think>...</think> reasoning block.
+using token_callback_t = std::function<bool(const std::string& piece, bool is_thinking)>;
 
 // ─── Core generation logic (shared by complete + stream) ───
 
@@ -188,6 +189,18 @@ static GenerationResult run_generation(
   std::string output;
   int cur_pos = n_tokens;
 
+  // Buffer for incomplete UTF-8 sequences across token boundaries.
+  // Some tokens produce single bytes of multi-byte chars (e.g. emoji = 4 bytes across 4 tokens).
+  // We accumulate until a valid UTF-8 string is formed before sending to the callback.
+  std::string utf8_buf;
+
+  // Track whether we're inside a <think>...</think> block for streaming.
+  // When thinking is enabled, the generation prompt already includes <think>,
+  // so we START in thinking mode and switch to content when </think> appears.
+  const std::string& think_start = chat_params.thinking_start_tag;
+  const std::string& think_end = chat_params.thinking_end_tag;
+  bool in_thinking = enable_thinking && !think_end.empty();
+
   for (int i = 0; i < max_tokens; i++) {
     if (abort_flag.load()) break;
 
@@ -203,6 +216,15 @@ static GenerationResult run_generation(
       output.append(piece);
     }
 
+    // Update thinking state: check if </think> has appeared in the accumulated output.
+    // We start in thinking mode (generation prompt has <think>), and switch out when </think> appears.
+    bool was_thinking = in_thinking;
+    if (in_thinking && !think_end.empty()) {
+      if (output.find(think_end) != std::string::npos) {
+        in_thinking = false;
+      }
+    }
+
     // Check stop sequences
     bool should_stop = false;
     for (const auto& stop : all_stops) {
@@ -214,8 +236,41 @@ static GenerationResult run_generation(
       }
     }
 
-    if (on_token && !piece.empty()) {
-      if (!on_token(piece)) break;
+    // Suppress the </think> boundary token from the callback — it's structural, not content.
+    // Detect by: we were thinking, now we're not, and the piece contains the end tag.
+    bool is_boundary = was_thinking && !in_thinking && !think_end.empty() &&
+                       piece.find(think_end) != std::string::npos;
+
+    if (on_token && !piece.empty() && !is_boundary) {
+      // Buffer partial UTF-8: accumulate bytes and only flush when the buffer
+      // ends on a complete UTF-8 character boundary.
+      utf8_buf.append(piece);
+
+      // Check if utf8_buf ends with a complete UTF-8 sequence.
+      // A trailing byte with high bits 10xxxxxx (0x80-0xBF) that doesn't have
+      // its leading byte fully satisfied means we need more bytes.
+      bool complete = true;
+      if (!utf8_buf.empty()) {
+        // Walk backward to find the start of the last character
+        size_t pos = utf8_buf.size() - 1;
+        // Skip continuation bytes (10xxxxxx)
+        while (pos > 0 && (static_cast<unsigned char>(utf8_buf[pos]) & 0xC0) == 0x80) {
+          pos--;
+        }
+        unsigned char lead = static_cast<unsigned char>(utf8_buf[pos]);
+        size_t char_len = 1;
+        if ((lead & 0x80) == 0)        char_len = 1; // 0xxxxxxx — ASCII
+        else if ((lead & 0xE0) == 0xC0) char_len = 2; // 110xxxxx
+        else if ((lead & 0xF0) == 0xE0) char_len = 3; // 1110xxxx
+        else if ((lead & 0xF8) == 0xF0) char_len = 4; // 11110xxx
+        size_t remaining = utf8_buf.size() - pos;
+        complete = (remaining >= char_len);
+      }
+
+      if (complete) {
+        if (!on_token(utf8_buf, in_thinking)) break;
+        utf8_buf.clear();
+      }
     }
 
     if (should_stop) break;
@@ -279,6 +334,23 @@ static GenerationResult run_generation(
       }
       c.erase(start, end + 8 - start); // 8 = strlen("</think>")
     }
+
+    // Handle standalone </think> in content (when <think> was part of the generation prompt,
+    // so the output has reasoning + </think> + content without a matching <think>)
+    auto think_end_pos = c.find("</think>");
+    if (think_end_pos != std::string::npos) {
+      // Everything before </think> is reasoning, everything after is content
+      std::string before = c.substr(0, think_end_pos);
+      // Trim and move to reasoning if reasoning_content is empty
+      if (result.reasoning_content.empty()) {
+        size_t bfirst = before.find_first_not_of(" \t\n\r");
+        if (bfirst != std::string::npos) {
+          result.reasoning_content = before.substr(bfirst);
+        }
+      }
+      c = c.substr(think_end_pos + 8); // 8 = strlen("</think>")
+    }
+
     // Trim leading whitespace from content after tag removal
     size_t first = c.find_first_not_of(" \t\n\r");
     if (first != std::string::npos && first > 0) {
@@ -588,14 +660,21 @@ public:
 
 protected:
   void Execute() override {
-    auto on_token = [this](const std::string& piece) -> bool {
-      auto* data = new std::string(piece);
-      auto status = tsfn_.BlockingCall(data, [](Napi::Env env, Napi::Function fn, std::string* text) {
+    // Pair: token text + isThinking flag
+    struct TokenData { std::string text; bool is_thinking; };
+
+    auto on_token = [this](const std::string& piece, bool is_thinking) -> bool {
+      auto* data = new TokenData{piece, is_thinking};
+      auto status = tsfn_.BlockingCall(data, [](Napi::Env env, Napi::Function fn, TokenData* td) {
         Napi::Object chunk = Napi::Object::New(env);
-        chunk.Set("content", Napi::String::New(env, *text));
+        if (td->is_thinking) {
+          chunk.Set("reasoning", Napi::String::New(env, td->text));
+        } else {
+          chunk.Set("content", Napi::String::New(env, td->text));
+        }
         chunk.Set("done", Napi::Boolean::New(env, false));
         fn.Call({chunk});
-        delete text;
+        delete td;
       });
       return status == napi_ok;
     };

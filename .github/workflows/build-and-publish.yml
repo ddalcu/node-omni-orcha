@@ -120,13 +120,42 @@ jobs:
         shell: bash
         run: ccache -s
 
+      # --- Bundle Windows runtime DLLs alongside omni.node ---
+      - name: Bundle CUDA DLLs (Windows)
+        if: runner.os == 'Windows' && matrix.gpu == 'cuda'
+        shell: bash
+        run: |
+          CUDA_BIN="${CUDA_PATH//\\//}/bin"
+          echo "Copying CUDA DLLs from $CUDA_BIN"
+          cp "$CUDA_BIN"/cudart64_*.dll build/Release/
+          cp "$CUDA_BIN"/cublas64_*.dll build/Release/
+          cp "$CUDA_BIN"/cublasLt64_*.dll build/Release/
+          echo "Bundled CUDA DLLs:"
+          ls -lh build/Release/*.dll
+
+      - name: Bundle VC++ OpenMP runtime (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          # vcomp140.dll is needed by ggml's CPU backend (OpenMP)
+          VCOMP=$(find "/c/Program Files/Microsoft Visual Studio" -path "*/x64/*" -name "vcomp140.dll" 2>/dev/null | head -1)
+          if [[ -n "$VCOMP" ]]; then
+            cp "$VCOMP" build/Release/
+            echo "Bundled vcomp140.dll from: $VCOMP"
+          else
+            echo "WARNING: vcomp140.dll not found in VS installation"
+          fi
+
       - name: Package artifacts
         shell: bash
         run: |
           mkdir -p artifacts
           cp build/Release/*.node artifacts/
           cp build/Release/*.metallib artifacts/ 2>/dev/null || true
+          cp build/Release/*.dll artifacts/ 2>/dev/null || true
           cp packages/${{ matrix.package }}/package.json artifacts/
+          echo "Packaged artifacts:"
+          ls -lh artifacts/
 
       - uses: actions/upload-artifact@v4
         with:

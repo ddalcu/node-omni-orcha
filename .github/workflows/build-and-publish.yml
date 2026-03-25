@@ -121,17 +121,9 @@ jobs:
         run: ccache -s
 
       # --- Bundle Windows runtime DLLs alongside omni.node ---
-      - name: Bundle CUDA DLLs (Windows)
-        if: runner.os == 'Windows' && matrix.gpu == 'cuda'
-        shell: bash
-        run: |
-          CUDA_BIN="${CUDA_PATH//\\//}/bin"
-          echo "Copying CUDA DLLs from $CUDA_BIN"
-          cp "$CUDA_BIN"/cudart64_*.dll build/Release/
-          cp "$CUDA_BIN"/cublas64_*.dll build/Release/
-          cp "$CUDA_BIN"/cublasLt64_*.dll build/Release/
-          echo "Bundled CUDA DLLs:"
-          ls -lh build/Release/*.dll
+      # CUDA DLLs (cublas64, cublasLt64) are NOT bundled — they total ~637 MB
+      # which exceeds npm's publish limit. Users need the CUDA Toolkit installed,
+      # same as Linux CUDA users. cudart is statically linked via GGML_STATIC.
 
       - name: Bundle VC++ OpenMP runtime (Windows)
         if: runner.os == 'Windows'

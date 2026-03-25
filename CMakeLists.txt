@@ -25,8 +25,9 @@ if(GPU_BACKEND STREQUAL "auto")
   message(STATUS "[omni] Auto-detected GPU backend: ${GPU_BACKEND}")
 endif()
 
-# Build static libraries
+# Build static libraries (also statically links CUDA runtime on CUDA builds)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(GGML_STATIC ON CACHE BOOL "" FORCE)
 
 # --- Engine (llama.cpp fork) ---
 set(LLAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -193,5 +194,5 @@ target_compile_definitions(omni PRIVATE
 # ggml-cuda) don't propagate to the final shared library. Link them explicitly.
 if(GPU_BACKEND STREQUAL "cuda")
   find_package(CUDAToolkit REQUIRED)
-  target_link_libraries(omni PRIVATE CUDA::cudart CUDA::cublas CUDA::cuda_driver)
+  target_link_libraries(omni PRIVATE CUDA::cudart_static CUDA::cublas CUDA::cuda_driver)
 endif()

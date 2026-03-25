@@ -84,13 +84,13 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /usr/local/cuda
-          key: cuda-12.6.3-${{ runner.os }}
+          key: cuda-13.1.0-${{ runner.os }}
 
       - name: Install CUDA Toolkit
         if: matrix.gpu == 'cuda' && (runner.os == 'Windows' || steps.cache-cuda.outputs.cache-hit != 'true')
-        uses: Jimver/cuda-toolkit@v0.2.22
+        uses: Jimver/cuda-toolkit@v0.2.30
         with:
-          cuda: '12.6.3'
+          cuda: '13.1.0'
 
       - name: Set CUDA env (Linux)
         if: matrix.gpu == 'cuda' && runner.os == 'Linux'
@@ -102,8 +102,8 @@ jobs:
         if: matrix.gpu == 'cuda' && runner.os == 'Windows'
         shell: bash
         run: |
-          echo "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/bin" >> $GITHUB_PATH
-          echo "CUDA_PATH=C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6" >> $GITHUB_ENV
+          echo "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.1/bin" >> $GITHUB_PATH
+          echo "CUDA_PATH=C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.1" >> $GITHUB_ENV
 
       # --- Build ---
       - name: Install dependencies

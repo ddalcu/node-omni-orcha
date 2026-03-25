@@ -29,7 +29,7 @@ export function createLlmModel(modelPath: string): LlmModel {
     async load(options?: LlmLoadOptions) {
       if (loaded) return;
 
-      const binding = loadBinding('llm');
+      const binding = loadBinding();
       metadata = await readGGUFMetadata(modelPath);
 
       const gpu = detectGpu();
@@ -37,10 +37,11 @@ export function createLlmModel(modelPath: string): LlmModel {
         ?? (metadata ? calculateOptimalContextSize(metadata) : 4096);
       const gpuLayers = options?.gpuLayers ?? (gpu.backend !== 'cpu' ? -1 : 0);
 
-      nativeCtx = await (binding['createContext'] as Function)(modelPath, {
+      nativeCtx = await (binding['createLlmContext'] as Function)(modelPath, {
         contextSize,
         gpuLayers,
         flashAttn: options?.flashAttn ?? (gpu.backend !== 'cpu'),
+        embeddings: options?.embeddings ?? false,
         batchSize: options?.batchSize ?? (gpu.backend !== 'cpu' ? 4096 : 512),
         cacheTypeK: options?.cacheTypeK ?? (gpu.backend === 'metal' ? 'q8_0' : 'f16'),
         cacheTypeV: options?.cacheTypeV ?? (gpu.backend === 'metal' ? 'q8_0' : 'f16'),

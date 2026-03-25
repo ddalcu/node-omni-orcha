@@ -1,7 +1,16 @@
 import { createRequire } from 'node:module';
 import * as path from 'node:path';
 import { existsSync } from 'node:fs';
+import { availableParallelism } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { detectGpu } from './utils/gpu.ts';
+
+// Ensure libuv thread pool is large enough for concurrent inference.
+// Must be set before any async I/O — imported modules run early enough.
+// Default to number of CPU cores (min 8), unless the user already set it.
+if (!process.env['UV_THREADPOOL_SIZE']) {
+  process.env['UV_THREADPOOL_SIZE'] = String(Math.max(availableParallelism(), 8));
+}
 
 const require = createRequire(import.meta.url);
 
@@ -9,19 +18,18 @@ interface NativeBinding {
   [key: string]: (...args: unknown[]) => unknown;
 }
 
-const loadedBindings = new Map<string, NativeBinding>();
+let cachedBinding: NativeBinding | null = null;
 
 /**
- * Load a native .node addon by engine name.
+ * Load the unified omni.node native addon.
  * Resolution order:
  *   1. Custom bindings directory (NODE_OMNI_ORCHA_BINDINGS env var — for SEA / standalone)
  *   2. CUDA-specific platform package (@agent-orcha/node-omni-orcha-{platform}-{arch}-cuda)
  *   3. Default platform package (@agent-orcha/node-omni-orcha-{platform}-{arch})
- *   4. Local cmake-js build (./build/Release/{engine}.node)
+ *   4. Local cmake-js build (./build/Release/omni.node)
  */
-export function loadBinding(engine: string): NativeBinding {
-  const cached = loadedBindings.get(engine);
-  if (cached) return cached;
+export function loadBinding(): NativeBinding {
+  if (cachedBinding) return cachedBinding;
 
   const platform = process.platform;
   const arch = process.arch;
@@ -30,26 +38,24 @@ export function loadBinding(engine: string): NativeBinding {
   // 1. Custom bindings directory (SEA / standalone deployments)
   const bindingsDir = process.env.NODE_OMNI_ORCHA_BINDINGS;
   if (bindingsDir) {
-    const customPath = path.join(bindingsDir, `${engine}.node`);
+    const customPath = path.join(bindingsDir, 'omni.node');
     if (existsSync(customPath)) {
-      const binding = require(customPath) as NativeBinding;
-      loadedBindings.set(engine, binding);
-      return binding;
+      cachedBinding = require(customPath) as NativeBinding;
+      return cachedBinding;
     }
   }
 
   // 2-3. Platform npm packages (CUDA-specific first, then default)
   const candidates: string[] = [];
   if (gpu.backend === 'cuda') {
-    candidates.push(`@agent-orcha/node-omni-orcha-${platform}-${arch}-cuda/${engine}.node`);
+    candidates.push(`@agent-orcha/node-omni-orcha-${platform}-${arch}-cuda/omni.node`);
   }
-  candidates.push(`@agent-orcha/node-omni-orcha-${platform}-${arch}/${engine}.node`);
+  candidates.push(`@agent-orcha/node-omni-orcha-${platform}-${arch}/omni.node`);
 
   for (const candidate of candidates) {
     try {
-      const binding = require(candidate) as NativeBinding;
-      loadedBindings.set(engine, binding);
-      return binding;
+      cachedBinding = require(candidate) as NativeBinding;
+      return cachedBinding;
     } catch {
       // Not found, try next
     }
@@ -57,21 +63,20 @@ export function loadBinding(engine: string): NativeBinding {
 
   // 4. Local cmake-js build (development)
   const localPath = path.resolve(
-    path.dirname(new URL(import.meta.url).pathname),
+    path.dirname(fileURLToPath(import.meta.url)),
     '..',
     'build',
     'Release',
-    `${engine}.node`,
+    'omni.node',
   );
 
   if (existsSync(localPath)) {
-    const binding = require(localPath) as NativeBinding;
-    loadedBindings.set(engine, binding);
-    return binding;
+    cachedBinding = require(localPath) as NativeBinding;
+    return cachedBinding;
   }
 
   throw new Error(
-    `Native binding "${engine}.node" not found. ` +
+    `Native binding "omni.node" not found. ` +
     `Install a platform package (@agent-orcha/node-omni-orcha-${platform}-${arch}) ` +
     `or build from source: npm run build`,
   );

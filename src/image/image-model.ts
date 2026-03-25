@@ -25,9 +25,9 @@ export function createImageModel(modelPath: string): ImageModel {
     async load(options?: ImageLoadOptions) {
       if (loaded) return;
 
-      const binding = loadBinding('image');
+      const binding = loadBinding();
 
-      nativeCtx = await (binding['createContext'] as Function)(modelPath, {
+      nativeCtx = await (binding['createImageContext'] as Function)(modelPath, {
         clipLPath: options?.clipLPath ?? '',
         t5xxlPath: options?.t5xxlPath ?? '',
         llmPath: options?.llmPath ?? '',

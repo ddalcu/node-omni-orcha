@@ -15,7 +15,6 @@ if(GPU_BACKEND STREQUAL "auto")
   if(APPLE)
     set(GPU_BACKEND "metal")
   else()
-    # Check for CUDA toolkit
     find_package(CUDAToolkit QUIET)
     if(CUDAToolkit_FOUND)
       set(GPU_BACKEND "cuda")
@@ -23,164 +22,176 @@ if(GPU_BACKEND STREQUAL "auto")
       set(GPU_BACKEND "cpu")
     endif()
   endif()
-  message(STATUS "[node-omni-orcha] Auto-detected GPU backend: ${GPU_BACKEND}")
+  message(STATUS "[omni] Auto-detected GPU backend: ${GPU_BACKEND}")
 endif()
 
-# Build static libraries from deps
+# Build static libraries
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 
-# --- llama.cpp ---
-if(EXISTS "${CMAKE_SOURCE_DIR}/deps/llama.cpp/CMakeLists.txt")
-  set(LLAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-  set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-  set(LLAMA_BUILD_SERVER OFF CACHE BOOL "" FORCE)
-  set(LLAMA_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
-  set(LLAMA_BUILD_COMMON ON CACHE BOOL "" FORCE)
+# --- Engine (llama.cpp fork) ---
+set(LLAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_SERVER OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_COMMON ON CACHE BOOL "" FORCE)
 
-  if(GPU_BACKEND STREQUAL "metal")
-    set(GGML_METAL ON CACHE BOOL "" FORCE)
-    set(GGML_CUDA OFF CACHE BOOL "" FORCE)
-  elseif(GPU_BACKEND STREQUAL "cuda")
-    set(GGML_METAL OFF CACHE BOOL "" FORCE)
-    set(GGML_CUDA ON CACHE BOOL "" FORCE)
-  else()
-    set(GGML_METAL OFF CACHE BOOL "" FORCE)
-    set(GGML_CUDA OFF CACHE BOOL "" FORCE)
-  endif()
+# Disable BLAS to avoid needing ggml-blas backend
+set(GGML_BLAS OFF CACHE BOOL "" FORCE)
 
-  add_subdirectory(deps/llama.cpp)
-  message(STATUS "[node-omni-orcha] llama.cpp configured with GPU_BACKEND=${GPU_BACKEND}")
-endif()
+# sd.cpp requires GGML_MAX_NAME >= 128
+add_compile_definitions(GGML_MAX_NAME=128)
 
-# --- stable-diffusion.cpp ---
-if(EXISTS "${CMAKE_SOURCE_DIR}/deps/stable-diffusion.cpp/CMakeLists.txt")
-  set(SD_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-
-  if(GPU_BACKEND STREQUAL "metal")
-    set(SD_METAL ON CACHE BOOL "" FORCE)
-    set(SD_CUDA OFF CACHE BOOL "" FORCE)
-  elseif(GPU_BACKEND STREQUAL "cuda")
-    set(SD_METAL OFF CACHE BOOL "" FORCE)
-    set(SD_CUDA ON CACHE BOOL "" FORCE)
-  else()
-    set(SD_METAL OFF CACHE BOOL "" FORCE)
-    set(SD_CUDA OFF CACHE BOOL "" FORCE)
-  endif()
-
-  add_subdirectory(deps/stable-diffusion.cpp)
-  message(STATUS "[node-omni-orcha] stable-diffusion.cpp configured with GPU_BACKEND=${GPU_BACKEND}")
-endif()
-
-# --- whisper.cpp ---
-if(EXISTS "${CMAKE_SOURCE_DIR}/deps/whisper.cpp/CMakeLists.txt")
-  set(WHISPER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-  set(WHISPER_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-  set(WHISPER_BUILD_SERVER OFF CACHE BOOL "" FORCE)
-
-  # whisper.cpp uses ggml internally with its own GPU detection
-  # We set the same GGML flags it respects
-  add_subdirectory(deps/whisper.cpp)
-  message(STATUS "[node-omni-orcha] whisper.cpp configured with GPU_BACKEND=${GPU_BACKEND}")
-endif()
-
-# --- Engine .node addons ---
-add_subdirectory(cpp/llm)
-
-if(TARGET stable-diffusion)
-  add_subdirectory(cpp/image)
-endif()
-
-# --- TTS.cpp (built as external project to avoid ggml target conflicts) ---
-if(EXISTS "${CMAKE_SOURCE_DIR}/deps/TTS.cpp/CMakeLists.txt")
-  include(ExternalProject)
-  set(TTS_BUILD_DIR "${CMAKE_BINARY_DIR}/tts-build")
-
-  # Platform-aware library paths (Unix: lib*.a, MSVC: *.lib in Release/)
-  set(P "${CMAKE_STATIC_LIBRARY_PREFIX}")
-  set(S "${CMAKE_STATIC_LIBRARY_SUFFIX}")
-  if(MSVC)
-    set(CFG "/Release")
-  else()
-    set(CFG "")
-  endif()
-
-  set(TTS_LIB_TTS      "${TTS_BUILD_DIR}/src${CFG}/${P}tts${S}")
-  set(TTS_LIB_GGML     "${TTS_BUILD_DIR}/ggml/src${CFG}/${P}ggml${S}")
-  set(TTS_LIB_GGML_BASE "${TTS_BUILD_DIR}/ggml/src${CFG}/${P}ggml-base${S}")
-  set(TTS_LIB_GGML_CPU "${TTS_BUILD_DIR}/ggml/src/ggml-cpu${CFG}/${P}ggml-cpu${S}")
-
-  set(TTS_PLATFORM_BYPRODUCTS "")
-  if(APPLE)
-    set(TTS_LIB_GGML_METAL "${TTS_BUILD_DIR}/ggml/src/ggml-metal${CFG}/${P}ggml-metal${S}")
-    set(TTS_LIB_GGML_BLAS  "${TTS_BUILD_DIR}/ggml/src/ggml-blas${CFG}/${P}ggml-blas${S}")
-    list(APPEND TTS_PLATFORM_BYPRODUCTS "${TTS_LIB_GGML_METAL}" "${TTS_LIB_GGML_BLAS}")
-  endif()
-
-  ExternalProject_Add(tts_external
-    SOURCE_DIR "${CMAKE_SOURCE_DIR}/deps/TTS.cpp"
-    BINARY_DIR "${TTS_BUILD_DIR}"
-    CMAKE_ARGS
-      -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
-      -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-      -DCMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES}
-      -DBUILD_SHARED_LIBS=OFF
-      -DTTS_BUILD_EXAMPLES=OFF
-      -DCMAKE_CXX_STANDARD=17
-      -DCMAKE_MSVC_RUNTIME_LIBRARY=${CMAKE_MSVC_RUNTIME_LIBRARY}
-      -DCMAKE_POLICY_DEFAULT_CMP0091=NEW
-    BUILD_BYPRODUCTS
-      "${TTS_LIB_TTS}"
-      "${TTS_LIB_GGML}"
-      "${TTS_LIB_GGML_BASE}"
-      "${TTS_LIB_GGML_CPU}"
-      ${TTS_PLATFORM_BYPRODUCTS}
-    INSTALL_COMMAND ""
-  )
-
-  # Create imported targets pointing to the build output directly
-  add_library(tts_lib STATIC IMPORTED)
-  set_target_properties(tts_lib PROPERTIES IMPORTED_LOCATION "${TTS_LIB_TTS}")
-  add_dependencies(tts_lib tts_external)
-
-  add_library(tts_ggml STATIC IMPORTED)
-  set_target_properties(tts_ggml PROPERTIES IMPORTED_LOCATION "${TTS_LIB_GGML}")
-  add_dependencies(tts_ggml tts_external)
-
-  add_library(tts_ggml_base STATIC IMPORTED)
-  set_target_properties(tts_ggml_base PROPERTIES IMPORTED_LOCATION "${TTS_LIB_GGML_BASE}")
-
-  add_library(tts_ggml_cpu STATIC IMPORTED)
-  set_target_properties(tts_ggml_cpu PROPERTIES IMPORTED_LOCATION "${TTS_LIB_GGML_CPU}")
-
-  if(APPLE)
-    add_library(tts_ggml_metal STATIC IMPORTED)
-    set_target_properties(tts_ggml_metal PROPERTIES IMPORTED_LOCATION "${TTS_LIB_GGML_METAL}")
-
-    add_library(tts_ggml_blas STATIC IMPORTED)
-    set_target_properties(tts_ggml_blas PROPERTIES IMPORTED_LOCATION "${TTS_LIB_GGML_BLAS}")
-  endif()
-
-  set(TTS_AVAILABLE ON)
-  message(STATUS "[node-omni-orcha] TTS.cpp configured as external project")
-endif()
-
-if(TARGET whisper)
-  add_subdirectory(cpp/stt)
-endif()
-
-if(TTS_AVAILABLE)
-  add_subdirectory(cpp/tts)
-endif()
-
-# --- qwen3-tts.cpp (pre-built externally, linked directly) ---
-set(Q3_DIR "${CMAKE_SOURCE_DIR}/deps/qwen3-tts.cpp")
-if(MSVC)
-  set(Q3_CFG "/Release")
+if(GPU_BACKEND STREQUAL "metal")
+  set(GGML_METAL ON CACHE BOOL "" FORCE)
+  set(GGML_CUDA OFF CACHE BOOL "" FORCE)
+elseif(GPU_BACKEND STREQUAL "cuda")
+  set(GGML_METAL OFF CACHE BOOL "" FORCE)
+  set(GGML_CUDA ON CACHE BOOL "" FORCE)
 else()
-  set(Q3_CFG "")
+  set(GGML_METAL OFF CACHE BOOL "" FORCE)
+  set(GGML_CUDA OFF CACHE BOOL "" FORCE)
 endif()
-set(Q3_LIB_CHECK "${Q3_DIR}/build${Q3_CFG}/${CMAKE_STATIC_LIBRARY_PREFIX}qwen3_tts${CMAKE_STATIC_LIBRARY_SUFFIX}")
-if(EXISTS "${Q3_LIB_CHECK}")
-  add_subdirectory(cpp/tts_qwen3)
-  message(STATUS "[node-omni-orcha] qwen3-tts.cpp addon enabled")
+
+add_subdirectory(engine)
+message(STATUS "[omni] Engine configured with GPU_BACKEND=${GPU_BACKEND}")
+
+# --- Find node-addon-api ---
+execute_process(
+  COMMAND node -p "require('node-addon-api').include"
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  OUTPUT_VARIABLE NODE_ADDON_API_DIR
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+string(REPLACE "\"" "" NODE_ADDON_API_DIR ${NODE_ADDON_API_DIR})
+
+# --- Whisper (STT engine) ---
+# Compile whisper.cpp directly against our shared ggml
+add_library(whisper STATIC
+  engine/stt/whisper.cpp
+)
+target_include_directories(whisper PUBLIC
+  ${CMAKE_SOURCE_DIR}/engine/stt
+)
+target_include_directories(whisper PRIVATE
+  ${CMAKE_SOURCE_DIR}/engine/ggml/include
+)
+target_link_libraries(whisper PRIVATE ggml)
+target_compile_features(whisper PRIVATE cxx_std_17)
+target_compile_definitions(whisper PRIVATE WHISPER_VERSION="1.0.0")
+set_target_properties(whisper PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+# --- Qwen3-TTS (TTS engine) ---
+# Compile qwen3-tts sources directly against our shared ggml
+add_library(qwen3_tts STATIC
+  engine/tts/text_tokenizer.cpp
+  engine/tts/tts_transformer.cpp
+  engine/tts/audio_tokenizer_encoder.cpp
+  engine/tts/audio_tokenizer_decoder.cpp
+  engine/tts/gguf_loader.cpp
+  engine/tts/qwen3_tts.cpp
+  engine/tts/qwen3tts_c_api.cpp
+  engine/tts/coreml_code_predictor_stub.cpp
+)
+target_include_directories(qwen3_tts PUBLIC
+  ${CMAKE_SOURCE_DIR}/engine/tts
+)
+target_include_directories(qwen3_tts PRIVATE
+  ${CMAKE_SOURCE_DIR}/engine/ggml/include
+  ${CMAKE_SOURCE_DIR}/engine/ggml/src
+)
+target_link_libraries(qwen3_tts PRIVATE ggml)
+target_compile_features(qwen3_tts PRIVATE cxx_std_17)
+set_target_properties(qwen3_tts PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+# --- Stable Diffusion (Image/Video engine) ---
+# Compile sd.cpp sources directly against our shared ggml
+add_library(stable-diffusion STATIC
+  engine/diffusion/stable-diffusion.cpp
+  engine/diffusion/model.cpp
+  engine/diffusion/name_conversion.cpp
+  engine/diffusion/tokenize_util.cpp
+  engine/diffusion/upscaler.cpp
+  engine/diffusion/util.cpp
+  engine/diffusion/version.cpp
+  engine/diffusion/zip.c
+  engine/diffusion/vocab/vocab.cpp
+)
+target_include_directories(stable-diffusion PUBLIC
+  ${CMAKE_SOURCE_DIR}/engine/diffusion
+)
+target_include_directories(stable-diffusion PRIVATE
+  ${CMAKE_SOURCE_DIR}/engine/ggml/include
+  ${CMAKE_SOURCE_DIR}/engine/ggml/src
+)
+target_link_libraries(stable-diffusion PRIVATE ggml)
+target_compile_features(stable-diffusion PRIVATE cxx_std_17)
+set_target_properties(stable-diffusion PROPERTIES POSITION_INDEPENDENT_CODE ON)
+if(GPU_BACKEND STREQUAL "metal")
+  target_compile_definitions(stable-diffusion PRIVATE SD_USE_METAL)
+elseif(GPU_BACKEND STREQUAL "cuda")
+  target_compile_definitions(stable-diffusion PRIVATE SD_USE_CUDA)
+endif()
+if(MSVC)
+  target_compile_definitions(stable-diffusion PRIVATE
+    _CRT_SECURE_NO_WARNINGS
+    _USE_MATH_DEFINES
+    _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING
+  )
+  target_compile_definitions(qwen3_tts PRIVATE _CRT_SECURE_NO_WARNINGS _USE_MATH_DEFINES)
+  target_compile_definitions(whisper PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
+
+# --- Unified omni.node addon ---
+set(OMNI_SOURCES
+  cpp/omni_binding.cpp
+  cpp/llm_context.cpp
+  cpp/stt_context.cpp
+  cpp/tts_context.cpp
+  cpp/image_context.cpp
+)
+
+add_library(omni SHARED ${OMNI_SOURCES} ${CMAKE_JS_SRC})
+set_target_properties(omni PROPERTIES
+  PREFIX ""
+  SUFFIX ".node"
+  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/Release"
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/Release"
+  # MSVC multi-config generators append a per-config subdirectory (e.g. Release/)
+  # to OUTPUT_DIRECTORY, causing build/Release/Release/. Setting the per-config
+  # property prevents this.
+  LIBRARY_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/Release"
+  RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/Release"
+)
+
+target_include_directories(omni PRIVATE
+  ${CMAKE_JS_INC}
+  ${NODE_ADDON_API_DIR}
+  ${CMAKE_SOURCE_DIR}/cpp/common
+  ${CMAKE_SOURCE_DIR}/engine/include
+  ${CMAKE_SOURCE_DIR}/engine/common
+  ${CMAKE_SOURCE_DIR}/engine/stt
+  ${CMAKE_SOURCE_DIR}/engine/tts
+  ${CMAKE_SOURCE_DIR}/engine/diffusion
+  ${CMAKE_SOURCE_DIR}/engine/vendor/stb
+)
+
+target_link_libraries(omni PRIVATE
+  ${CMAKE_JS_LIB}
+  llama
+  common
+  whisper
+  qwen3_tts
+  stable-diffusion
+)
+
+target_compile_definitions(omni PRIVATE
+  NAPI_VERSION=9
+  NODE_ADDON_API_DISABLE_DEPRECATED
+)
+
+# On Windows, PRIVATE link deps of static libraries (like CUDA::cuda_driver in
+# ggml-cuda) don't propagate to the final shared library. Link them explicitly.
+if(GPU_BACKEND STREQUAL "cuda")
+  find_package(CUDAToolkit REQUIRED)
+  target_link_libraries(omni PRIVATE CUDA::cudart CUDA::cublas CUDA::cuda_driver)
 endif()

@@ -2,16 +2,22 @@ import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createModel } from '../src/index.ts';
 import { loadBinding } from '../src/binding-loader.ts';
 import type { SttModel } from '../src/types.ts';
+import { saveTestOutput } from './test-output-helper.ts';
+
+const MODELS_DIR = process.env['MODELS_DIR'] || path.join(process.env['HOME'] || process.env['USERPROFILE'] || '', '.orcha', 'workspace', '.models');
+const FIXTURES_DIR = fileURLToPath(new URL('./fixtures', import.meta.url));
 
 // Binding loader test
 describe('STT binding loader', () => {
-  it('loads the stt binding from local build', () => {
-    const binding = loadBinding('stt');
+  it('loads the stt context from unified omni binding', () => {
+    const binding = loadBinding();
     assert.ok(binding, 'Binding should be loaded');
-    assert.equal(typeof binding['createContext'], 'function', 'Should export createContext');
+    assert.equal(typeof binding['createSttContext'], 'function', 'Should export createSttContext');
   });
 });
 
@@ -25,12 +31,12 @@ describe('createModel stt', () => {
 });
 
 // Integration tests (require model + audio)
-const WHISPER_MODEL_PATH = new URL('./fixtures/whisper-tiny.bin', import.meta.url).pathname;
-const AUDIO_PATH = new URL('./fixtures/test-audio.pcm', import.meta.url).pathname;
+const WHISPER_MODEL_PATH = path.join(MODELS_DIR, 'whisper-tiny.bin');
+const AUDIO_PATH = path.join(FIXTURES_DIR, 'test-audio.pcm');
 const hasModel = existsSync(WHISPER_MODEL_PATH);
 const hasAudio = existsSync(AUDIO_PATH);
 
-describe('SttModel', { skip: !hasModel ? 'No whisper model at test/fixtures/whisper-tiny.bin — run scripts/download-test-models.sh --whisper' : undefined }, () => {
+describe('SttModel', { skip: !hasModel ? `No whisper model at ${WHISPER_MODEL_PATH} — run scripts/download-test-models.sh` : undefined }, () => {
   let model: SttModel;
 
   before(async () => {
@@ -56,6 +62,10 @@ describe('SttModel', { skip: !hasModel ? 'No whisper model at test/fixtures/whis
     assert.ok(result.segments[0]!.start >= 0, 'Segment should have start time');
     assert.ok(result.segments[0]!.end > result.segments[0]!.start, 'Segment end > start');
     assert.ok(result.segments[0]!.text.length > 0, 'Segment should have text');
+
+    const text = `Text: ${result.text.trim()}\nLanguage: ${result.language}\nSegments:\n${JSON.stringify(result.segments, null, 2)}`;
+    const outPath = saveTestOutput('stt', 'whisper-tiny', { lang: 'en' }, text, '.txt');
+    console.log(`    Saved: ${outPath}`);
   });
 
   it('detects language', { skip: !hasAudio ? 'No test audio' : undefined }, async () => {

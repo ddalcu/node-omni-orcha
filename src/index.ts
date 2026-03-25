@@ -1,4 +1,3 @@
-import { detectModelType } from './model-detector.ts';
 import { createLlmModel } from './llm/llm-model.ts';
 import { createImageModel } from './image/image-model.ts';
 import { createSttModel } from './stt/stt-model.ts';
@@ -44,28 +43,17 @@ export type {
 // Re-export utilities
 export { readGGUFMetadata } from './utils/gguf-reader.ts';
 export { detectGpu } from './utils/gpu.ts';
-export { detectModelType } from './model-detector.ts';
 
 /**
- * Load a model from a file path.
- * Auto-detects model type from file format, or accepts an explicit type hint.
+ * Load a model from a file path. Type is required.
  * Returns a loaded, ready-to-use model instance.
  */
-export async function loadModel(filePath: string, options?: LoadModelOptions): Promise<Model>;
 export async function loadModel(filePath: string, options: LoadModelOptions & { type: 'llm' }): Promise<LlmModel>;
 export async function loadModel(filePath: string, options: LoadModelOptions & { type: 'image' }): Promise<ImageModel>;
 export async function loadModel(filePath: string, options: LoadModelOptions & { type: 'stt' }): Promise<SttModel>;
 export async function loadModel(filePath: string, options: LoadModelOptions & { type: 'tts' }): Promise<TtsModel>;
-export async function loadModel(filePath: string, options?: LoadModelOptions): Promise<Model> {
-  const modelType = options?.type ?? await detectModelType(filePath);
-  if (!modelType) {
-    throw new Error(
-      `Could not detect model type for "${filePath}". ` +
-      `Provide an explicit type: loadModel(path, { type: 'llm' })`,
-    );
-  }
-
-  switch (modelType) {
+export async function loadModel(filePath: string, options: LoadModelOptions & { type: ModelType }): Promise<Model> {
+  switch (options.type) {
     case 'llm': {
       const model = createLlmModel(filePath);
       await model.load(options);
@@ -87,7 +75,7 @@ export async function loadModel(filePath: string, options?: LoadModelOptions): P
       return model;
     }
     default:
-      throw new Error(`Unknown model type: ${modelType}`);
+      throw new Error(`Unknown model type: ${(options as any).type}`);
   }
 }
 

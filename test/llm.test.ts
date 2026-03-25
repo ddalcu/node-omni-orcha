@@ -1,13 +1,16 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
+import * as path from 'node:path';
 import { loadModel, createModel } from '../src/index.ts';
 import type { LlmModel, ToolDefinition } from '../src/types.ts';
+import { saveTestOutput } from './test-output-helper.ts';
 
-const TEST_MODEL_PATH = new URL('./fixtures/tinyllama.gguf', import.meta.url).pathname;
+const MODELS_DIR = process.env['MODELS_DIR'] || path.join(process.env['HOME'] || process.env['USERPROFILE'] || '', '.orcha', 'workspace', '.models');
+const TEST_MODEL_PATH = path.join(MODELS_DIR, 'tinyllama.gguf');
 const hasModel = existsSync(TEST_MODEL_PATH);
 
-describe('LlmModel', { skip: !hasModel ? 'No test model at test/fixtures/tinyllama.gguf — run scripts/download-test-models.sh' : undefined }, () => {
+describe('LlmModel', { skip: !hasModel ? `No test model at ${TEST_MODEL_PATH} — run scripts/download-test-models.sh` : undefined }, () => {
   let model: LlmModel;
 
   before(async () => {
@@ -26,14 +29,19 @@ describe('LlmModel', { skip: !hasModel ? 'No test model at test/fixtures/tinylla
   });
 
   it('completes a simple prompt', async () => {
+    const opts = { temperature: 0, maxTokens: 32 };
     const result = await model.complete([
       { role: 'user', content: 'Say hello in one word.' },
-    ], { temperature: 0, maxTokens: 32 });
+    ], opts);
 
     assert.ok(result.content.length > 0, 'Should have content');
     assert.ok(result.usage.inputTokens > 0, 'Should have input tokens');
     assert.ok(result.usage.outputTokens > 0, 'Should have output tokens');
     assert.equal(result.usage.totalTokens, result.usage.inputTokens + result.usage.outputTokens);
+
+    const text = `Prompt: Say hello in one word.\n\nResponse:\n${result.content}\n\nUsage: ${JSON.stringify(result.usage)}`;
+    const outPath = saveTestOutput('llm', 'tinyllama', { temperature: 0, maxTokens: 32 }, text, '.txt');
+    console.log(`    Saved: ${outPath}`);
   });
 
   it('respects maxTokens', async () => {
@@ -74,7 +82,7 @@ describe('createModel', { skip: !hasModel ? 'No test model' : undefined }, () =>
 });
 
 // ─── Tool Calling Tests (require a model with tool-calling template) ───
-const TOOL_MODEL_PATH = new URL('./fixtures/Qwen3.5-4B-IQ4_NL.gguf', import.meta.url).pathname;
+const TOOL_MODEL_PATH = path.join(MODELS_DIR, 'Qwen3.5-4B-IQ4_NL.gguf');
 const hasToolModel = existsSync(TOOL_MODEL_PATH);
 
 const weatherTool: ToolDefinition = {
@@ -111,14 +119,10 @@ describe('LlmModel tool calling', { skip: !hasToolModel ? 'No Qwen3.5-4B model f
   });
 
   it('returns tool calls when tools are provided', async () => {
+    const opts = { temperature: 0, maxTokens: 256, tools: [weatherTool], toolChoice: 'required' as const };
     const result = await model.complete([
       { role: 'user', content: 'What is the weather in Tokyo?' },
-    ], {
-      temperature: 0,
-      maxTokens: 256,
-      tools: [weatherTool],
-      toolChoice: 'required',
-    });
+    ], opts);
 
     assert.ok(result.toolCalls, 'Should have toolCalls');
     assert.ok(result.toolCalls!.length > 0, 'Should have at least one tool call');
@@ -127,10 +131,13 @@ describe('LlmModel tool calling', { skip: !hasToolModel ? 'No Qwen3.5-4B model f
     assert.equal(tc.name, 'get_weather', 'Should call get_weather');
     assert.ok(tc.args, 'Should have args');
 
-    // Args should be valid JSON
     const args = JSON.parse(tc.args);
     assert.ok(args.city, 'Should have city argument');
+
+    const text = `Tool call: ${tc.name}(${tc.args})\n\nContent: ${result.content}\nReasoning: ${result.reasoning ?? ''}\nUsage: ${JSON.stringify(result.usage)}`;
+    const outPath = saveTestOutput('llm', 'Qwen3.5-4B-IQ4_NL', { temperature: 0, maxTokens: 256, tool: 'get_weather' }, text, '.txt');
     console.log(`    Tool call: ${tc.name}(${tc.args})`);
+    console.log(`    Saved: ${outPath}`);
   });
 
   it('toolChoice none produces plain text', async () => {

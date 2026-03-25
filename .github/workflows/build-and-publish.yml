@@ -4,6 +4,11 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish to npm after build'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -38,8 +43,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - uses: actions/setup-node@v4
         with:
@@ -63,7 +66,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ runner.os == 'Windows' && 'C:\Users\runneradmin\AppData\Local\ccache' || '~/.cache/ccache' }}
-          key: ccache-${{ matrix.package }}-${{ hashFiles('deps/**/*.cpp', 'deps/**/*.h', 'cpp/**/*.cpp', 'cpp/**/*.h', 'CMakeLists.txt') }}
+          key: ccache-${{ matrix.package }}-${{ hashFiles('engine/**/*.cpp', 'engine/**/*.h', 'engine/**/*.hpp', 'cpp/**/*.cpp', 'cpp/**/*.h', 'CMakeLists.txt') }}
           restore-keys: |
             ccache-${{ matrix.package }}-
 
@@ -74,17 +77,17 @@ jobs:
           ccache --set-config=compression=true
           ccache -z
 
-      # --- CUDA toolkit (cached) ---
-      - name: Cache CUDA Toolkit
-        if: matrix.gpu == 'cuda'
+      # --- CUDA toolkit (cached on Linux, always fresh on Windows) ---
+      - name: Cache CUDA Toolkit (Linux)
+        if: matrix.gpu == 'cuda' && runner.os == 'Linux'
         id: cache-cuda
         uses: actions/cache@v4
         with:
-          path: ${{ runner.os == 'Windows' && 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA' || '/usr/local/cuda' }}
+          path: /usr/local/cuda
           key: cuda-12.6.3-${{ runner.os }}
 
       - name: Install CUDA Toolkit
-        if: matrix.gpu == 'cuda' && steps.cache-cuda.outputs.cache-hit != 'true'
+        if: matrix.gpu == 'cuda' && (runner.os == 'Windows' || steps.cache-cuda.outputs.cache-hit != 'true')
         uses: Jimver/cuda-toolkit@v0.2.22
         with:
           cuda: '12.6.3'
@@ -101,61 +104,6 @@ jobs:
         run: |
           echo "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/bin" >> $GITHUB_PATH
           echo "CUDA_PATH=C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6" >> $GITHUB_ENV
-
-      # --- Pre-build qwen3-tts.cpp ---
-      - name: Pre-build qwen3-tts.cpp
-        shell: bash
-        run: |
-          JOBS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo $NUMBER_OF_PROCESSORS)
-          QWEN3_DIR="deps/qwen3-tts.cpp"
-
-          # Step 1: Build ggml
-          GGML_ARGS=(
-            -DCMAKE_BUILD_TYPE=Release
-            -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-            -DBUILD_SHARED_LIBS=OFF
-            -DGGML_BUILD_TESTS=OFF
-            -DGGML_BUILD_EXAMPLES=OFF
-          )
-
-          case "${{ matrix.gpu }}" in
-            metal)
-              GGML_ARGS+=(-DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_BLAS=ON -DGGML_BLAS_VENDOR=Apple)
-              ;;
-            cuda)
-              GGML_ARGS+=(-DGGML_METAL=OFF -DGGML_CUDA=ON)
-              if [[ "$RUNNER_OS" == "Windows" ]]; then
-                GGML_ARGS+=(-DCUDAToolkit_ROOT="$CUDA_PATH" -DCMAKE_CUDA_COMPILER="$CUDA_PATH/bin/nvcc.exe")
-              fi
-              ;;
-            *)
-              GGML_ARGS+=(-DGGML_METAL=OFF -DGGML_CUDA=OFF)
-              ;;
-          esac
-
-          # Windows: match cmake-js static CRT (/MT) and enable CMP0091
-          if [[ "$RUNNER_OS" == "Windows" ]]; then
-            GGML_ARGS+=(-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DCMAKE_POLICY_DEFAULT_CMP0091=NEW)
-          fi
-
-          cmake -S "$QWEN3_DIR/ggml" -B "$QWEN3_DIR/ggml/build" "${GGML_ARGS[@]}"
-          cmake --build "$QWEN3_DIR/ggml/build" --config Release -j "$JOBS"
-
-          # Step 2: Build qwen3-tts.cpp
-          QWEN3_ARGS=(
-            -DCMAKE_BUILD_TYPE=Release
-            -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-            -DQWEN3_TTS_COREML=OFF
-          )
-          if [[ "$RUNNER_OS" == "Windows" ]]; then
-            QWEN3_ARGS+=(-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DCMAKE_POLICY_DEFAULT_CMP0091=NEW)
-          fi
-
-          cmake -S "$QWEN3_DIR" -B "$QWEN3_DIR/build" "${QWEN3_ARGS[@]}"
-
-          cmake --build "$QWEN3_DIR/build" --config Release \
-            --target qwen3_tts text_tokenizer tts_transformer audio_tokenizer_encoder audio_tokenizer_decoder \
-            -j "$JOBS"
 
       # --- Build ---
       - name: Install dependencies
@@ -176,9 +124,8 @@ jobs:
         shell: bash
         run: |
           mkdir -p artifacts
-          # MSVC multi-config puts output in build/Release/Release/, others in build/Release/
-          cp build/Release/Release/*.node artifacts/ 2>/dev/null || cp build/Release/*.node artifacts/
-          cp build/Release/Release/*.metallib artifacts/ 2>/dev/null || cp build/Release/*.metallib artifacts/ 2>/dev/null || true
+          cp build/Release/*.node artifacts/
+          cp build/Release/*.metallib artifacts/ 2>/dev/null || true
           cp packages/${{ matrix.package }}/package.json artifacts/
 
       - uses: actions/upload-artifact@v4
@@ -187,6 +134,7 @@ jobs:
           path: artifacts/
 
   publish:
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.publish)
     needs: build
     runs-on: ubuntu-latest
 
@@ -208,6 +156,8 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts/
+          pattern: '{darwin-*,linux-*,win32-*}'
+          merge-multiple: false
 
       - name: Publish platform packages
         shell: bash
@@ -217,6 +167,10 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           for dir in artifacts/*/; do
             pkg=$(basename "$dir")
+            if [[ ! -f "$dir/package.json" ]]; then
+              echo "Skipping $pkg (no package.json)"
+              continue
+            fi
             echo "Publishing @agent-orcha/node-omni-orcha-$pkg@$VERSION"
             cd "$dir"
             node -e "

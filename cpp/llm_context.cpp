@@ -123,19 +123,23 @@ static GenerationResult run_generation(
     llama_memory_clear(mem, true);
   }
 
-  // Process prompt
-  llama_batch batch = llama_batch_init(n_tokens, 0, 1);
-  for (int i = 0; i < n_tokens; i++) {
-    batch_add(batch, tokens[i], i, {0}, false);
-  }
-  batch.logits[batch.n_tokens - 1] = 1;
+  // Process prompt in chunks of n_batch
+  const int n_batch = (int)llama_n_batch(ctx);
+  for (int i = 0; i < n_tokens; i += n_batch) {
+    int chunk = std::min(n_batch, n_tokens - i);
+    llama_batch batch = llama_batch_init(chunk, 0, 1);
+    for (int j = 0; j < chunk; j++) {
+      bool is_last = (i + j == n_tokens - 1);
+      batch_add(batch, tokens[i + j], i + j, {0}, is_last);
+    }
 
-  if (llama_decode(ctx, batch) != 0) {
+    if (llama_decode(ctx, batch) != 0) {
+      llama_batch_free(batch);
+      result.error = "Failed to process prompt";
+      return result;
+    }
     llama_batch_free(batch);
-    result.error = "Failed to process prompt";
-    return result;
   }
-  llama_batch_free(batch);
 
   // Build common_params_sampling from chat_params
   common_params_sampling sparams;
@@ -783,15 +787,21 @@ protected:
       llama_memory_clear(mem, true);
     }
 
-    llama_batch batch = llama_batch_init(n_tokens, 0, 1);
-    for (int i = 0; i < n_tokens; i++) {
-      batch_add(batch, tokens[i], i, {0}, i == n_tokens - 1);
-    }
+    const int n_batch = (int)llama_n_batch(ctx_);
+    for (int i = 0; i < n_tokens; i += n_batch) {
+      int chunk = std::min(n_batch, n_tokens - i);
+      llama_batch batch = llama_batch_init(chunk, 0, 1);
+      for (int j = 0; j < chunk; j++) {
+        bool is_last = (i + j == n_tokens - 1);
+        batch_add(batch, tokens[i + j], i + j, {0}, is_last);
+      }
 
-    if (llama_decode(ctx_, batch) != 0) {
+      if (llama_decode(ctx_, batch) != 0) {
+        llama_batch_free(batch);
+        SetError("Failed to compute embeddings");
+        return;
+      }
       llama_batch_free(batch);
-      SetError("Failed to compute embeddings");
-      return;
     }
 
     int n_embd = llama_model_n_embd(model_);
@@ -808,8 +818,6 @@ protected:
     } else {
       SetError("Failed to get embeddings — model may not support embedding mode");
     }
-
-    llama_batch_free(batch);
   }
 
   void OnOK() override {
@@ -896,15 +904,21 @@ protected:
         llama_memory_clear(mem, true);
       }
 
-      llama_batch batch = llama_batch_init(n_tokens, 0, 1);
-      for (int i = 0; i < n_tokens; i++) {
-        batch_add(batch, tokens[i], i, {0}, i == n_tokens - 1);
-      }
+      const int n_batch = (int)llama_n_batch(ctx_);
+      for (int i = 0; i < n_tokens; i += n_batch) {
+        int chunk = std::min(n_batch, n_tokens - i);
+        llama_batch batch = llama_batch_init(chunk, 0, 1);
+        for (int j = 0; j < chunk; j++) {
+          bool is_last = (i + j == n_tokens - 1);
+          batch_add(batch, tokens[i + j], i + j, {0}, is_last);
+        }
 
-      if (llama_decode(ctx_, batch) != 0) {
+        if (llama_decode(ctx_, batch) != 0) {
+          llama_batch_free(batch);
+          SetError("Failed to compute embeddings for text at index " + std::to_string(t));
+          return;
+        }
         llama_batch_free(batch);
-        SetError("Failed to compute embeddings for text at index " + std::to_string(t));
-        return;
       }
 
       const float* embd = llama_get_embeddings_seq(ctx_, 0);
@@ -919,12 +933,9 @@ protected:
         }
         all_embeddings_.push_back(std::move(vec));
       } else {
-        llama_batch_free(batch);
         SetError("Failed to get embeddings for text at index " + std::to_string(t));
         return;
       }
-
-      llama_batch_free(batch);
     }
   }
 

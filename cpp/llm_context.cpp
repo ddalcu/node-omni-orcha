@@ -310,6 +310,7 @@ LlmContext::LlmContext(const Napi::CallbackInfo& info)
   int contextSize = getInt32Option(opts, "contextSize", 4096);
   int gpuLayers = getInt32Option(opts, "gpuLayers", -1);
   bool flashAttn = getBoolOption(opts, "flashAttn", false);
+  bool embeddings = getBoolOption(opts, "embeddings", false);
   int batchSize = getInt32Option(opts, "batchSize", 512);
   std::string cacheTypeK = getStringOption(opts, "cacheTypeK", "f16");
   std::string cacheTypeV = getStringOption(opts, "cacheTypeV", "f16");
@@ -328,6 +329,7 @@ LlmContext::LlmContext(const Napi::CallbackInfo& info)
   ctx_params.n_ctx = contextSize;
   ctx_params.n_batch = batchSize;
   ctx_params.flash_attn_type = flashAttn ? LLAMA_FLASH_ATTN_TYPE_ENABLED : LLAMA_FLASH_ATTN_TYPE_AUTO;
+  ctx_params.embeddings = embeddings;
 
   if (cacheTypeK == "q8_0") ctx_params.type_k = GGML_TYPE_Q8_0;
   else if (cacheTypeK == "q4_0") ctx_params.type_k = GGML_TYPE_Q4_0;
@@ -772,8 +774,132 @@ Napi::Value LlmContext::Embed(const Napi::CallbackInfo& info) {
   return worker->Promise();
 }
 
+// ─── EmbedBatch ───
+
+class EmbedBatchWorker : public Napi::AsyncWorker {
+public:
+  EmbedBatchWorker(
+    Napi::Env env,
+    llama_model* model,
+    llama_context* ctx,
+    std::vector<std::string> texts
+  ) : Napi::AsyncWorker(env),
+      deferred_(Napi::Promise::Deferred::New(env)),
+      model_(model), ctx_(ctx),
+      texts_(std::move(texts)) {}
+
+  Napi::Promise Promise() { return deferred_.Promise(); }
+
+protected:
+  void Execute() override {
+    const llama_vocab* vocab = llama_model_get_vocab(model_);
+    int n_embd = llama_model_n_embd(model_);
+
+    for (size_t t = 0; t < texts_.size(); t++) {
+      const auto& text = texts_[t];
+
+      std::vector<llama_token> tokens(4096);
+      int n_tokens = llama_tokenize(vocab, text.c_str(), text.length(),
+                                    tokens.data(), tokens.size(), true, true);
+      if (n_tokens < 0) {
+        tokens.resize(-n_tokens);
+        n_tokens = llama_tokenize(vocab, text.c_str(), text.length(),
+                                  tokens.data(), tokens.size(), true, true);
+      }
+      if (n_tokens < 0) {
+        SetError("Tokenization failed for text at index " + std::to_string(t));
+        return;
+      }
+      tokens.resize(n_tokens);
+
+      llama_memory_t mem = llama_get_memory(ctx_);
+      if (mem) {
+        llama_memory_clear(mem, true);
+      }
+
+      llama_batch batch = llama_batch_init(n_tokens, 0, 1);
+      for (int i = 0; i < n_tokens; i++) {
+        batch_add(batch, tokens[i], i, {0}, i == n_tokens - 1);
+      }
+
+      if (llama_decode(ctx_, batch) != 0) {
+        llama_batch_free(batch);
+        SetError("Failed to compute embeddings for text at index " + std::to_string(t));
+        return;
+      }
+
+      const float* embd = llama_get_embeddings_seq(ctx_, 0);
+      if (!embd) {
+        embd = llama_get_embeddings_ith(ctx_, -1);
+      }
+
+      if (embd) {
+        std::vector<double> vec(n_embd);
+        for (int i = 0; i < n_embd; i++) {
+          vec[i] = (double)embd[i];
+        }
+        all_embeddings_.push_back(std::move(vec));
+      } else {
+        llama_batch_free(batch);
+        SetError("Failed to get embeddings for text at index " + std::to_string(t));
+        return;
+      }
+
+      llama_batch_free(batch);
+    }
+  }
+
+  void OnOK() override {
+    auto env = Env();
+    Napi::HandleScope scope(env);
+
+    Napi::Array result = Napi::Array::New(env, all_embeddings_.size());
+    for (size_t i = 0; i < all_embeddings_.size(); i++) {
+      auto arr = Napi::Float64Array::New(env, all_embeddings_[i].size());
+      for (size_t j = 0; j < all_embeddings_[i].size(); j++) {
+        arr[j] = all_embeddings_[i][j];
+      }
+      result.Set((uint32_t)i, arr);
+    }
+
+    deferred_.Resolve(result);
+  }
+
+  void OnError(const Napi::Error& e) override {
+    deferred_.Reject(e.Value());
+  }
+
+private:
+  Napi::Promise::Deferred deferred_;
+  llama_model* model_;
+  llama_context* ctx_;
+  std::vector<std::string> texts_;
+  std::vector<std::vector<double>> all_embeddings_;
+};
+
 Napi::Value LlmContext::EmbedBatch(const Napi::CallbackInfo& info) {
-  throw Napi::Error::New(info.Env(), "Batch embedding not yet implemented");
+  auto env = info.Env();
+
+  if (!ctx_ || !model_) {
+    throw Napi::Error::New(env, "Model not loaded");
+  }
+  if (info.Length() < 1 || !info[0].IsArray()) {
+    throw Napi::TypeError::New(env, "Array of strings required");
+  }
+
+  Napi::Array arr = info[0].As<Napi::Array>();
+  std::vector<std::string> texts;
+  texts.reserve(arr.Length());
+  for (uint32_t i = 0; i < arr.Length(); i++) {
+    if (!arr.Get(i).IsString()) {
+      throw Napi::TypeError::New(env, "All elements must be strings");
+    }
+    texts.push_back(arr.Get(i).As<Napi::String>().Utf8Value());
+  }
+
+  auto* worker = new EmbedBatchWorker(env, model_, ctx_, std::move(texts));
+  worker->Queue();
+  return worker->Promise();
 }
 
 // ─── Unload ───

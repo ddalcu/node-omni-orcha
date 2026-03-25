@@ -41,6 +41,7 @@ export function createLlmModel(modelPath: string): LlmModel {
         contextSize,
         gpuLayers,
         flashAttn: options?.flashAttn ?? (gpu.backend !== 'cpu'),
+        embeddings: options?.embeddings ?? false,
         batchSize: options?.batchSize ?? (gpu.backend !== 'cpu' ? 4096 : 512),
         cacheTypeK: options?.cacheTypeK ?? (gpu.backend === 'metal' ? 'q8_0' : 'f16'),
         cacheTypeV: options?.cacheTypeV ?? (gpu.backend === 'metal' ? 'q8_0' : 'f16'),

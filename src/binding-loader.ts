@@ -1,8 +1,16 @@
 import { createRequire } from 'node:module';
 import * as path from 'node:path';
 import { existsSync } from 'node:fs';
+import { availableParallelism } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { detectGpu } from './utils/gpu.ts';
+
+// Ensure libuv thread pool is large enough for concurrent inference.
+// Must be set before any async I/O — imported modules run early enough.
+// Default to number of CPU cores (min 8), unless the user already set it.
+if (!process.env['UV_THREADPOOL_SIZE']) {
+  process.env['UV_THREADPOOL_SIZE'] = String(Math.max(availableParallelism(), 8));
+}
 
 const require = createRequire(import.meta.url);
 

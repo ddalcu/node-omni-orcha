@@ -77,6 +77,66 @@ TtsContext::~TtsContext() {
 
 // ─── Speak ───
 
+class SpeakWorker : public Napi::AsyncWorker {
+public:
+  SpeakWorker(
+    Napi::Env env,
+    Qwen3Tts* tts,
+    std::string text,
+    std::string referenceAudioPath,
+    Qwen3TtsParams params
+  ) : Napi::AsyncWorker(env),
+      deferred_(Napi::Promise::Deferred::New(env)),
+      tts_(tts),
+      text_(std::move(text)),
+      referenceAudioPath_(std::move(referenceAudioPath)),
+      params_(params) {}
+
+  Napi::Promise Promise() { return deferred_.Promise(); }
+
+protected:
+  void Execute() override {
+    Qwen3TtsAudio* audio = nullptr;
+    if (!referenceAudioPath_.empty()) {
+      audio = qwen3_tts_synthesize_with_voice_file(
+        tts_, text_.c_str(), referenceAudioPath_.c_str(), &params_);
+    } else {
+      audio = qwen3_tts_synthesize(tts_, text_.c_str(), &params_);
+    }
+
+    if (!audio || !audio->samples || audio->n_samples == 0) {
+      const char* err = qwen3_tts_get_error(tts_);
+      std::string msg = "Qwen3 TTS generation failed";
+      if (err && strlen(err) > 0) msg += std::string(": ") + err;
+      if (audio) qwen3_tts_free_audio(audio);
+      SetError(msg);
+      return;
+    }
+
+    wav_data_ = encode_wav(audio->samples, audio->n_samples, audio->sample_rate);
+    qwen3_tts_free_audio(audio);
+  }
+
+  void OnOK() override {
+    auto env = Env();
+    Napi::HandleScope scope(env);
+    auto buffer = Napi::Buffer<uint8_t>::Copy(env, wav_data_.data(), wav_data_.size());
+    deferred_.Resolve(buffer);
+  }
+
+  void OnError(const Napi::Error& e) override {
+    deferred_.Reject(e.Value());
+  }
+
+private:
+  Napi::Promise::Deferred deferred_;
+  Qwen3Tts* tts_;
+  std::string text_;
+  std::string referenceAudioPath_;
+  Qwen3TtsParams params_;
+  std::vector<uint8_t> wav_data_;
+};
+
 Napi::Value TtsContext::Speak(const Napi::CallbackInfo& info) {
   auto env = info.Env();
   if (!tts_) throw Napi::Error::New(env, "TTS not loaded");
@@ -101,30 +161,9 @@ Napi::Value TtsContext::Speak(const Napi::CallbackInfo& info) {
     }
   }
 
-  // Run synchronously (qwen3-tts uses Metal which may not be thread-safe)
-  Qwen3TtsAudio* audio = nullptr;
-  if (!referenceAudioPath.empty()) {
-    audio = qwen3_tts_synthesize_with_voice_file(
-      tts_, text.c_str(), referenceAudioPath.c_str(), &params);
-  } else {
-    audio = qwen3_tts_synthesize(tts_, text.c_str(), &params);
-  }
-
-  if (!audio || !audio->samples || audio->n_samples == 0) {
-    const char* err = qwen3_tts_get_error(tts_);
-    std::string msg = "Qwen3 TTS generation failed";
-    if (err && strlen(err) > 0) msg += std::string(": ") + err;
-    if (audio) qwen3_tts_free_audio(audio);
-    throw Napi::Error::New(env, msg);
-  }
-
-  auto wav = encode_wav(audio->samples, audio->n_samples, audio->sample_rate);
-  qwen3_tts_free_audio(audio);
-
-  auto buffer = Napi::Buffer<uint8_t>::Copy(env, wav.data(), wav.size());
-  auto deferred = Napi::Promise::Deferred::New(env);
-  deferred.Resolve(buffer);
-  return deferred.Promise();
+  auto* worker = new SpeakWorker(env, tts_, std::move(text), std::move(referenceAudioPath), params);
+  worker->Queue();
+  return worker->Promise();
 }
 
 // ─── Unload ───

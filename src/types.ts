@@ -32,6 +32,8 @@ export interface LlmLoadOptions {
   contextSize?: number;
   gpuLayers?: number;
   flashAttn?: boolean;
+  /** Enable embedding mode (required for embed/embedBatch). Default: false. */
+  embeddings?: boolean;
   batchSize?: number;
   cacheTypeK?: 'f16' | 'q8_0' | 'q4_0';
   cacheTypeV?: 'f16' | 'q8_0' | 'q4_0';

@@ -56,9 +56,8 @@ if(GPU_BACKEND STREQUAL "metal")
 elseif(GPU_BACKEND STREQUAL "cuda")
   set(GGML_METAL OFF CACHE BOOL "" FORCE)
   set(GGML_CUDA ON CACHE BOOL "" FORCE)
-  # Build for RTX 2080+ (Turing SM 7.5) through current gen.
-  # 100-virtual provides PTX forward compatibility for Blackwell+ GPUs.
-  set(CMAKE_CUDA_ARCHITECTURES "75-real;80-real;86-real;89-real;100-virtual" CACHE STRING "" FORCE)
+  # Build native SASS for RTX 2080+ (Turing SM 7.5) through Blackwell.
+  set(CMAKE_CUDA_ARCHITECTURES "75-real;80-real;86-real;89-real;100-real" CACHE STRING "" FORCE)
 else()
   set(GGML_METAL OFF CACHE BOOL "" FORCE)
   set(GGML_CUDA OFF CACHE BOOL "" FORCE)

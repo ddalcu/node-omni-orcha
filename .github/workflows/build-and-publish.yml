@@ -23,13 +23,13 @@ jobs:
           - os: macos-14
             package: darwin-arm64
             gpu: metal
-          - os: ubuntu-24.04
+          - os: ubuntu-22.04
             package: linux-x64
             gpu: cpu
-          - os: ubuntu-24.04
+          - os: ubuntu-22.04
             package: linux-x64-cuda
             gpu: cuda
-          - os: ubuntu-24.04-arm
+          - os: ubuntu-22.04-arm
             package: linux-arm64
             gpu: cpu
           - os: windows-2022
@@ -57,10 +57,10 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install ccache
 
-      - name: Install ccache (Windows)
+      - name: Install ccache and Ninja (Windows)
         if: runner.os == 'Windows'
         shell: bash
-        run: choco install ccache -y
+        run: choco install ccache ninja -y
 
       - name: Cache ccache
         uses: actions/cache@v4
@@ -77,17 +77,17 @@ jobs:
           ccache --set-config=compression=true
           ccache -z
 
-      # --- CUDA toolkit (cached on Linux, always fresh on Windows) ---
-      - name: Cache CUDA Toolkit (Linux)
-        if: matrix.gpu == 'cuda' && runner.os == 'Linux'
+      # --- CUDA toolkit (cached on both Linux and Windows) ---
+      - name: Cache CUDA Toolkit
+        if: matrix.gpu == 'cuda'
         id: cache-cuda
         uses: actions/cache@v4
         with:
-          path: /usr/local/cuda
-          key: cuda-13.1.0-${{ runner.os }}
+          path: ${{ runner.os == 'Windows' && 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.1' || '/usr/local/cuda' }}
+          key: cuda-13.1.0-${{ matrix.os }}
 
       - name: Install CUDA Toolkit
-        if: matrix.gpu == 'cuda' && (runner.os == 'Windows' || steps.cache-cuda.outputs.cache-hit != 'true')
+        if: matrix.gpu == 'cuda' && steps.cache-cuda.outputs.cache-hit != 'true'
         uses: Jimver/cuda-toolkit@v0.2.30
         with:
           cuda: '13.1.0'
@@ -114,7 +114,11 @@ jobs:
         run: |
           export CMAKE_C_COMPILER_LAUNCHER=ccache
           export CMAKE_CXX_COMPILER_LAUNCHER=ccache
-          npm run build:${{ matrix.gpu }}
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            npx cmake-js compile --parallel --generator Ninja --CDGPU_BACKEND=${{ matrix.gpu }}
+          else
+            npm run build:${{ matrix.gpu }}
+          fi
 
       - name: ccache stats
         shell: bash

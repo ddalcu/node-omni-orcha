@@ -202,6 +202,12 @@ target_compile_definitions(omni PRIVATE
   NODE_ADDON_API_DISABLE_DEPRECATED
 )
 
+# On Windows, link delayimp.lib for /DELAYLOAD:NODE.EXE support.
+# The Visual Studio generator links this automatically but Ninja does not.
+if(MSVC)
+  target_link_libraries(omni PRIVATE delayimp.lib)
+endif()
+
 # On Windows, PRIVATE link deps of static libraries (like CUDA::cuda_driver in
 # ggml-cuda) don't propagate to the final shared library. Link them explicitly.
 if(GPU_BACKEND STREQUAL "cuda")

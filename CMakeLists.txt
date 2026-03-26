@@ -44,6 +44,9 @@ set(GGML_BLAS OFF CACHE BOOL "" FORCE)
 # AVX-512 or other instructions that crash on older CPUs (e.g. Illegal instruction).
 set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
 
+# Link-time optimization for smaller, faster binaries
+set(GGML_LTO ON CACHE BOOL "" FORCE)
+
 # sd.cpp requires GGML_MAX_NAME >= 128
 add_compile_definitions(GGML_MAX_NAME=128)
 
@@ -53,6 +56,9 @@ if(GPU_BACKEND STREQUAL "metal")
 elseif(GPU_BACKEND STREQUAL "cuda")
   set(GGML_METAL OFF CACHE BOOL "" FORCE)
   set(GGML_CUDA ON CACHE BOOL "" FORCE)
+  # Build for RTX 2080+ (Turing SM 7.5) through current gen.
+  # 100-virtual provides PTX forward compatibility for Blackwell+ GPUs.
+  set(CMAKE_CUDA_ARCHITECTURES "75-real;80-real;86-real;89-real;100-virtual" CACHE STRING "" FORCE)
 else()
   set(GGML_METAL OFF CACHE BOOL "" FORCE)
   set(GGML_CUDA OFF CACHE BOOL "" FORCE)

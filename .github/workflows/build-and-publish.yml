@@ -119,7 +119,12 @@ jobs:
           export CMAKE_C_COMPILER_LAUNCHER=ccache
           export CMAKE_CXX_COMPILER_LAUNCHER=ccache
           if [[ "$RUNNER_OS" == "Windows" ]]; then
-            npx cmake-js compile --parallel --generator Ninja --CDCMAKE_C_COMPILER=cl --CDCMAKE_CXX_COMPILER=cl --CDGPU_BACKEND=${{ matrix.gpu }}
+            # Find real Windows SDK rc.exe — npm's "rc" package in node_modules/.bin shadows it
+            RC_EXE=$(find "/c/Program Files (x86)/Windows Kits" -name "rc.exe" -path "*/x64/*" 2>/dev/null | sort -V | tail -1)
+            npx cmake-js compile --parallel --generator Ninja \
+              --CDCMAKE_C_COMPILER=cl --CDCMAKE_CXX_COMPILER=cl \
+              --CDCMAKE_RC_COMPILER="$RC_EXE" \
+              --CDGPU_BACKEND=${{ matrix.gpu }}
           else
             npm run build:${{ matrix.gpu }}
           fi

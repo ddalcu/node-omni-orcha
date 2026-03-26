@@ -27,18 +27,44 @@ export function createImageModel(modelPath: string): ImageModel {
 
       const binding = loadBinding();
 
-      nativeCtx = await (binding['createImageContext'] as Function)(modelPath, {
+      const buildOpts = (overrides?: Partial<ImageLoadOptions>) => ({
         clipLPath: options?.clipLPath ?? '',
         t5xxlPath: options?.t5xxlPath ?? '',
         llmPath: options?.llmPath ?? '',
         vaePath: options?.vaePath ?? '',
         highNoiseDiffusionModelPath: options?.highNoiseDiffusionModelPath ?? '',
         threads: options?.threads ?? -1,
-        keepVaeOnCpu: options?.keepVaeOnCpu ?? false,
-        offloadToCpu: options?.offloadToCpu ?? false,
+        keepVaeOnCpu: overrides?.keepVaeOnCpu ?? options?.keepVaeOnCpu ?? false,
+        offloadToCpu: overrides?.offloadToCpu ?? options?.offloadToCpu ?? false,
         flashAttn: options?.flashAttn ?? true,
         vaeDecodeOnly: options?.vaeDecodeOnly ?? true,
       });
+
+      // Try loading, then retry with CPU offload on CUDA OOM
+      try {
+        nativeCtx = await (binding['createImageContext'] as Function)(modelPath, buildOpts());
+      } catch (err: any) {
+        const msg = String(err?.message ?? err).toLowerCase();
+        const isOom = msg.includes('out of memory') || msg.includes('cuda error') || msg.includes('alloc');
+        if (!isOom || options?.offloadToCpu) throw err;
+
+        // Retry 1: keep VAE on CPU (frees ~300MB VRAM for FLUX)
+        if (!options?.keepVaeOnCpu) {
+          console.warn('[omni] CUDA OOM loading image model, retrying with VAE on CPU...');
+          try {
+            nativeCtx = await (binding['createImageContext'] as Function)(modelPath, buildOpts({ keepVaeOnCpu: true }));
+            loaded = true;
+            return;
+          } catch (err2: any) {
+            const msg2 = String(err2?.message ?? err2).toLowerCase();
+            if (!(msg2.includes('out of memory') || msg2.includes('cuda error') || msg2.includes('alloc'))) throw err2;
+          }
+        }
+
+        // Retry 2: offload entire model to CPU
+        console.warn('[omni] CUDA OOM loading image model, falling back to CPU offload...');
+        nativeCtx = await (binding['createImageContext'] as Function)(modelPath, buildOpts({ keepVaeOnCpu: true, offloadToCpu: true }));
+      }
 
       loaded = true;
     },

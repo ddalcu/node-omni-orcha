@@ -35,9 +35,10 @@ export function createLlmModel(modelPath: string): LlmModel {
       const gpu = detectGpu();
       const contextSize = options?.contextSize
         ?? (metadata ? calculateOptimalContextSize(metadata) : 4096);
-      const gpuLayers = options?.gpuLayers ?? (gpu.backend !== 'cpu' ? -1 : 0);
+      const requestedGpuLayers = options?.gpuLayers ?? (gpu.backend !== 'cpu' ? -1 : 0);
+      const totalLayers = metadata?.blockCount ?? 0;
 
-      nativeCtx = await (binding['createLlmContext'] as Function)(modelPath, {
+      const buildOpts = (gpuLayers: number) => ({
         contextSize,
         gpuLayers,
         flashAttn: options?.flashAttn ?? (gpu.backend !== 'cpu'),
@@ -48,6 +49,60 @@ export function createLlmModel(modelPath: string): LlmModel {
         chatTemplate: options?.chatTemplate ?? '',
       });
 
+      // When gpuLayers is -1 (all), retry with fewer layers on CUDA OOM
+      // so the model spills to system RAM instead of crashing.
+      let gpuLayers = requestedGpuLayers;
+      if (gpu.backend !== 'cpu' && gpuLayers === -1 && totalLayers > 0) {
+        // Try all layers first, then binary-search down on OOM
+        let hi = totalLayers + 1; // +1 for output layer
+        let lo = 0;
+        let lastError: Error | null = null;
+
+        // First attempt: all layers
+        try {
+          nativeCtx = await (binding['createLlmContext'] as Function)(modelPath, buildOpts(-1));
+          loaded = true;
+          return;
+        } catch (err: any) {
+          if (!isOomError(err)) throw err;
+          lastError = err;
+          console.warn(`[omni] CUDA OOM with all ${hi} GPU layers, reducing...`);
+        }
+
+        // Binary search for max layers that fit
+        while (lo < hi) {
+          const mid = Math.floor((lo + hi) / 2);
+          try {
+            nativeCtx = await (binding['createLlmContext'] as Function)(modelPath, buildOpts(mid));
+            // Succeeded — try more layers
+            lo = mid + 1;
+            // Keep this context as the best so far
+            break;
+          } catch (err: any) {
+            if (!isOomError(err)) throw err;
+            lastError = err;
+            hi = mid;
+          }
+        }
+
+        if (nativeCtx) {
+          console.warn(`[omni] Loaded with ${lo > 0 ? lo - 1 : 0}/${totalLayers} GPU layers (remaining on CPU)`);
+          loaded = true;
+          return;
+        }
+
+        // Last resort: CPU only
+        try {
+          console.warn('[omni] Falling back to CPU-only (0 GPU layers)');
+          nativeCtx = await (binding['createLlmContext'] as Function)(modelPath, buildOpts(0));
+          loaded = true;
+          return;
+        } catch (err: any) {
+          throw lastError ?? err;
+        }
+      }
+
+      nativeCtx = await (binding['createLlmContext'] as Function)(modelPath, buildOpts(gpuLayers));
       loaded = true;
     },
 
@@ -166,6 +221,14 @@ export function createLlmModel(modelPath: string): LlmModel {
   }
 
   return model;
+}
+
+/**
+ * Detect CUDA out-of-memory errors from the native binding.
+ */
+function isOomError(err: unknown): boolean {
+  const msg = String((err as Error)?.message ?? err).toLowerCase();
+  return msg.includes('out of memory') || msg.includes('cuda error') || msg.includes('alloc');
 }
 
 /**

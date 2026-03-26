@@ -1,0 +1,97 @@
+name: Publish Only
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Build workflow run ID to publish artifacts from'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '25'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Compile TypeScript
+        run: npm run build:ts
+
+      - name: Generate version
+        id: version
+        run: echo "version=$(date -u +'%Y.%-m%d.%-H%M')" >> "$GITHUB_OUTPUT"
+
+      - name: Set version
+        run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version
+
+      - name: Download artifacts from build run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p artifacts
+          echo "Downloading artifacts from run ${{ inputs.run_id }}..."
+          ARTIFACTS=$(gh api repos/${{ github.repository }}/actions/runs/${{ inputs.run_id }}/artifacts --jq '.artifacts[] | select(.name | test("^(darwin|linux|win32)-")) | .id')
+          for id in $ARTIFACTS; do
+            NAME=$(gh api repos/${{ github.repository }}/actions/artifacts/$id --jq '.name')
+            echo "Downloading $NAME (artifact $id)..."
+            gh api repos/${{ github.repository }}/actions/artifacts/$id/zip > /tmp/$NAME.zip
+            mkdir -p artifacts/$NAME
+            unzip -o /tmp/$NAME.zip -d artifacts/$NAME
+          done
+          echo "Downloaded artifacts:"
+          ls -R artifacts/
+
+      - name: Publish platform packages
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          for dir in artifacts/*/; do
+            pkg=$(basename "$dir")
+            if [[ ! -f "$dir/package.json" ]]; then
+              echo "Skipping $pkg (no package.json)"
+              continue
+            fi
+            echo "Publishing @agent-orcha/node-omni-orcha-$pkg@$VERSION"
+            cd "$dir"
+            node -e "
+              const fs = require('fs');
+              const p = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+              p.version = '$VERSION';
+              fs.writeFileSync('package.json', JSON.stringify(p, null, 2) + '\n');
+            "
+            npm publish --access public --provenance
+            cd - > /dev/null
+          done
+
+      - name: Align optionalDependencies versions
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          node -e "
+            const fs = require('fs');
+            const p = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            for (const k of Object.keys(p.optionalDependencies || {})) {
+              p.optionalDependencies[k] = '$VERSION';
+            }
+            fs.writeFileSync('package.json', JSON.stringify(p, null, 2) + '\n');
+          "
+
+      - name: Publish main package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public --provenance

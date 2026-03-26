@@ -15,10 +15,10 @@
     "node": ">=25.0.0"
   },
   "scripts": {
-    "build": "cmake-js compile --CDGPU_BACKEND=auto",
-    "build:metal": "cmake-js compile --CDGPU_BACKEND=metal",
-    "build:cuda": "cmake-js compile --CDGPU_BACKEND=cuda",
-    "build:cpu": "cmake-js compile --CDGPU_BACKEND=cpu",
+    "build": "cmake-js compile --parallel --CDGPU_BACKEND=auto",
+    "build:metal": "cmake-js compile --parallel --CDGPU_BACKEND=metal",
+    "build:cuda": "cmake-js compile --parallel --CDGPU_BACKEND=cuda",
+    "build:cpu": "cmake-js compile --parallel --CDGPU_BACKEND=cpu",
     "rebuild": "cmake-js rebuild",
     "clean": "cmake-js clean",
     "test": "node --test test/*.test.ts",

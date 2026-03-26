@@ -435,9 +435,8 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
 // pool with virtual memory
 #if defined(GGML_USE_VMM)
 struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
-    static const size_t CUDA_POOL_VMM_MAX_SIZE = 1ull << 35; // 32 GB
-
     int device;
+    size_t pool_vmm_max_size;
     CUdeviceptr pool_addr = 0;
     size_t pool_used = 0;
     size_t pool_size = 0;
@@ -449,6 +448,10 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
     explicit ggml_cuda_pool_vmm(int device) :
         device(device),
         granularity(ggml_cuda_info().devices[device].vmm_granularity) {
+        // Cap VMM virtual address reservation to 2x device VRAM (min 1 GB)
+        // Reserving 32 GB on 8 GB cards can fail on Windows CUDA drivers
+        size_t vram = ggml_cuda_info().devices[device].total_vram;
+        pool_vmm_max_size = vram > 0 ? std::max(vram * 2, (size_t)(1ull << 30)) : (1ull << 35);
     }
 
     ~ggml_cuda_pool_vmm() {
@@ -461,7 +464,7 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
 #else
             CU_CHECK(cuMemUnmap(pool_addr, pool_size));
 #endif
-            CU_CHECK(cuMemAddressFree(pool_addr, CUDA_POOL_VMM_MAX_SIZE));
+            CU_CHECK(cuMemAddressFree(pool_addr, pool_vmm_max_size));
         }
     }
 
@@ -477,7 +480,7 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
             size_t reserve_size = size - avail;
             reserve_size = granularity * ((reserve_size + granularity - 1) / granularity);
 
-            GGML_ASSERT(pool_size + reserve_size <= CUDA_POOL_VMM_MAX_SIZE);
+            GGML_ASSERT(pool_size + reserve_size <= pool_vmm_max_size);
 
             // allocate more physical memory
             CUmemAllocationProp prop = {};
@@ -489,7 +492,7 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
 
             // reserve virtual address space (if not already reserved)
             if (pool_addr == 0) {
-                CU_CHECK(cuMemAddressReserve(&pool_addr, CUDA_POOL_VMM_MAX_SIZE, 0, 0, 0));
+                CU_CHECK(cuMemAddressReserve(&pool_addr, pool_vmm_max_size, 0, 0, 0));
             }
 
             // map at the end of the pool

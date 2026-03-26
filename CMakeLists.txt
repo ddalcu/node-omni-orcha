@@ -38,6 +38,12 @@ set(LLAMA_BUILD_COMMON ON CACHE BOOL "" FORCE)
 # Disable BLAS to avoid needing ggml-blas backend
 set(GGML_BLAS OFF CACHE BOOL "" FORCE)
 
+# Disable GGML_NATIVE so published binaries are portable across x86_64 CPUs.
+# With NATIVE=OFF, ggml enables AVX/AVX2/F16C/FMA by default — safe for any
+# CPU from ~2013 onward. NATIVE=ON compiles with -march=native which can emit
+# AVX-512 or other instructions that crash on older CPUs (e.g. Illegal instruction).
+set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
+
 # sd.cpp requires GGML_MAX_NAME >= 128
 add_compile_definitions(GGML_MAX_NAME=128)
 

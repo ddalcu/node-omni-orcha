@@ -109,13 +109,17 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      - name: Setup MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Build native addons
         shell: bash
         run: |
           export CMAKE_C_COMPILER_LAUNCHER=ccache
           export CMAKE_CXX_COMPILER_LAUNCHER=ccache
           if [[ "$RUNNER_OS" == "Windows" ]]; then
-            npx cmake-js compile --parallel --generator Ninja --CDGPU_BACKEND=${{ matrix.gpu }}
+            npx cmake-js compile --parallel --generator Ninja --CDCMAKE_C_COMPILER=cl --CDCMAKE_CXX_COMPILER=cl --CDGPU_BACKEND=${{ matrix.gpu }}
           else
             npm run build:${{ matrix.gpu }}
           fi

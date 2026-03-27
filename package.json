@@ -18,6 +18,7 @@
     "build": "cmake-js compile --parallel --CDGPU_BACKEND=auto",
     "build:metal": "cmake-js compile --parallel --CDGPU_BACKEND=metal",
     "build:cuda": "cmake-js compile --parallel --CDGPU_BACKEND=cuda",
+    "build:cuda:release": "cmake-js compile --parallel --CDGPU_BACKEND=cuda --CDCUDA_RELEASE=ON",
     "build:cpu": "cmake-js compile --parallel --CDGPU_BACKEND=cpu",
     "rebuild": "cmake-js rebuild",
     "clean": "cmake-js clean",

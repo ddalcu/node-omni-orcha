@@ -56,10 +56,18 @@ if(GPU_BACKEND STREQUAL "metal")
 elseif(GPU_BACKEND STREQUAL "cuda")
   set(GGML_METAL OFF CACHE BOOL "" FORCE)
   set(GGML_CUDA ON CACHE BOOL "" FORCE)
-  # Build native SASS for RTX 2080+ (Turing SM 7.5) through Blackwell.
-  # 75=Turing(2080), 80=Ampere DC(A100), 86=Ampere(3090), 89=Ada(4090), 120=Blackwell(5090)
-  # 121-virtual provides PTX forward compat for GB10 (DIGITS) and future architectures
-  set(CMAKE_CUDA_ARCHITECTURES "75-real;80-real;86-real;89-real;120-real;121-virtual" CACHE STRING "" FORCE)
+  option(CUDA_RELEASE "Build native SASS for all supported architectures (slow, for releases)" OFF)
+  if(CUDA_RELEASE)
+    # Native SASS for RTX 2080+ (Turing SM 7.5) through Blackwell.
+    # 75=Turing(2080), 80=Ampere DC(A100), 86=Ampere(3090), 89=Ada(4090), 120=Blackwell(5090)
+    # 121-virtual provides PTX forward compat for GB10 (DIGITS) and future architectures
+    set(CMAKE_CUDA_ARCHITECTURES "75-real;80-real;86-real;89-real;120-real;121-virtual" CACHE STRING "" FORCE)
+    message(STATUS "[omni] CUDA release build: all architectures (75-120 SASS + 121 PTX)")
+  else()
+    # PTX-only for fast dev builds — JIT-compiles on any GPU >= sm_75
+    set(CMAKE_CUDA_ARCHITECTURES "75-virtual" CACHE STRING "" FORCE)
+    message(STATUS "[omni] CUDA dev build: PTX-only (75-virtual)")
+  endif()
 else()
   set(GGML_METAL OFF CACHE BOOL "" FORCE)
   set(GGML_CUDA OFF CACHE BOOL "" FORCE)

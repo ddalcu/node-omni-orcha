@@ -403,11 +403,14 @@ LlmContext::LlmContext(const Napi::CallbackInfo& info)
 
   llama_context_params ctx_params = llama_context_default_params();
   ctx_params.n_ctx = contextSize;
-  ctx_params.n_batch = batchSize;
-  // Encoder models (e.g. nomic-bert) require n_ubatch >= n_tokens.
-  // n_ubatch defaults to 512 internally — sync it to n_batch.
   if (embeddings) {
-    ctx_params.n_ubatch = batchSize;
+    // Encoder models (e.g. nomic-bert) process the full sequence in one pass —
+    // n_batch and n_ubatch must be >= the total token count of any single input.
+    // Setting both to contextSize guarantees any valid input fits in one shot.
+    ctx_params.n_batch = contextSize;
+    ctx_params.n_ubatch = contextSize;
+  } else {
+    ctx_params.n_batch = batchSize;
   }
   ctx_params.flash_attn_type = flashAttn ? LLAMA_FLASH_ATTN_TYPE_ENABLED : LLAMA_FLASH_ATTN_TYPE_AUTO;
   ctx_params.embeddings = embeddings;

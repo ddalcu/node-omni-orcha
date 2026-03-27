@@ -124,9 +124,10 @@ jobs:
             npx cmake-js compile --parallel --generator Ninja \
               --CDCMAKE_C_COMPILER=cl --CDCMAKE_CXX_COMPILER=cl \
               --CDCMAKE_RC_COMPILER="$RC_EXE" \
-              --CDGPU_BACKEND=${{ matrix.gpu }}
+              --CDGPU_BACKEND=${{ matrix.gpu }} \
+              ${{ matrix.gpu == 'cuda' && '--CDCUDA_RELEASE=ON' || '' }}
           else
-            npm run build:${{ matrix.gpu }}
+            npm run build:${{ matrix.gpu == 'cuda' && 'cuda:release' || matrix.gpu }}
           fi
 
       - name: ccache stats

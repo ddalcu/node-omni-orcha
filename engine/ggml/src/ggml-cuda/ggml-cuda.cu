@@ -2,6 +2,8 @@
 #include "ggml-impl.h"
 #include "ggml-backend-impl.h"
 
+#include <stdexcept>
+
 #include "ggml-cuda/common.cuh"
 #include "ggml-cuda/acc.cuh"
 #include "ggml-cuda/add-id.cuh"
@@ -91,11 +93,13 @@ void ggml_cuda_error(const char * stmt, const char * func, const char * file, in
     int id = -1; // in case cudaGetDevice fails
     (void)cudaGetDevice(&id);
 
-    GGML_LOG_ERROR(GGML_CUDA_NAME " error: %s\n", msg);
-    GGML_LOG_ERROR("  current device: %d, in function %s at %s:%d\n", id, func, file, line);
-    GGML_LOG_ERROR("  %s\n", stmt);
-    // abort with GGML_ABORT to get a stack trace
-    GGML_ABORT(GGML_CUDA_NAME " error");
+    char buf[1024];
+    snprintf(buf, sizeof(buf),
+        GGML_CUDA_NAME " error: %s\n  current device: %d, in function %s at %s:%d\n  %s",
+        msg, id, func, file, line, stmt);
+    GGML_LOG_ERROR("%s\n", buf);
+    // Throw instead of abort so N-API callers can catch OOM and retry with fewer GPU layers.
+    throw std::runtime_error(buf);
 }
 
 // this is faster on Windows

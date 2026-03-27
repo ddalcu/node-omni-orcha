@@ -35,7 +35,11 @@ export function createLlmModel(modelPath: string): LlmModel {
       const gpu = detectGpu();
       const contextSize = options?.contextSize
         ?? (metadata ? calculateOptimalContextSize(metadata) : 4096);
-      const requestedGpuLayers = options?.gpuLayers ?? (gpu.backend !== 'cpu' ? -1 : 0);
+      const isEmbedding = options?.embeddings ?? false;
+      // Embedding models (e.g. nomic-bert) are small and fast on CPU — default to 0 GPU layers
+      // to avoid competing for VRAM with the main LLM. Users can still override with gpuLayers.
+      const defaultGpuLayers = gpu.backend === 'cpu' ? 0 : (isEmbedding ? 0 : -1);
+      const requestedGpuLayers = options?.gpuLayers ?? defaultGpuLayers;
       const totalLayers = metadata?.blockCount ?? 0;
 
       const buildOpts = (gpuLayers: number) => ({

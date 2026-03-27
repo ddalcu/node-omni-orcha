@@ -93,6 +93,11 @@ await tts.load()
 const wav = await tts.speak('Hello world', { referenceAudioPath: 'voice.wav' })
 ```
 
+## Design Decisions
+
+- **Custom binding over node-llama-cpp** — node-llama-cpp only covers LLM. We need LLM + STT + TTS + Image/Video sharing one ggml build to avoid symbol conflicts and GPU backend contention. Separate binaries for each engine would mean duplicate ggml symbols, competing VRAM allocation, and more total complexity.
+- **Thin inference layer** — this library handles inference and chat templating (via llama.cpp's native Jinja engine) but not tool-call orchestration or model management. Consumers (agent-orcha) own that.
+
 ## Key Conventions
 
 - `loadModel()` requires explicit `type` — no auto-detection

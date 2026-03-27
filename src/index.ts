@@ -32,6 +32,7 @@ export type {
   ToolCall,
   ImageOptions,
   ImageLoadOptions,
+  VideoOptions,
   SampleMethod,
   Scheduler,
   TranscribeOptions,

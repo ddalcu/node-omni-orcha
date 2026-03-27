@@ -150,6 +150,14 @@ engine/
 → build/Release/omni.node (single output, ~10-30MB depending on platform)
 ```
 
+### Why not node-llama-cpp?
+
+[node-llama-cpp](https://github.com/withcatai/node-llama-cpp) is a well-maintained binding — if you only need LLM inference, use it. This project exists because we need four engines (LLM, STT, TTS, Image/Video) sharing **one ggml build** in **one process**:
+
+- **No symbol conflicts** — llama.cpp, whisper.cpp, stable-diffusion.cpp, and qwen3-tts.cpp all depend on ggml. Separate binaries mean duplicate symbols and linker errors. One unified build solves this.
+- **One GPU backend** — Metal/CUDA is initialized once and shared across all engines. Separate bindings would compete for VRAM and require independent backend negotiation.
+- **Thin by design** — this library handles inference and chat templating (via llama.cpp's native Jinja engine) but not tool-call orchestration or model management. Those are handled by consumers (e.g. agent-orcha).
+
 ## Build
 
 ```bash

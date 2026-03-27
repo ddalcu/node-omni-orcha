@@ -258,6 +258,8 @@ export interface SpeakOptions {
   referenceAudioPath?: string;
   /** Sampling temperature (default 0.9) */
   temperature?: number;
+  /** Maximum audio duration in seconds (default: 90, max: 180). Prevents runaway generation. */
+  maxDurationSeconds?: number;
 }
 
 export interface TtsModel {

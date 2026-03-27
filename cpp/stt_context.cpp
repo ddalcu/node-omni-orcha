@@ -286,13 +286,17 @@ Napi::Value SttContext::Unload(const Napi::CallbackInfo& info) {
 
 static Napi::Value CreateSttContext(const Napi::CallbackInfo& info) {
   auto env = info.Env();
-  std::vector<napi_value> args;
-  for (size_t i = 0; i < info.Length(); i++) {
-    args.push_back(info[i]);
-  }
-  Napi::Object ctx = SttContext::constructor_.New(args);
   auto deferred = Napi::Promise::Deferred::New(env);
-  deferred.Resolve(ctx);
+  try {
+    std::vector<napi_value> args;
+    for (size_t i = 0; i < info.Length(); i++) {
+      args.push_back(info[i]);
+    }
+    Napi::Object ctx = SttContext::constructor_.New(args);
+    deferred.Resolve(ctx);
+  } catch (const Napi::Error& e) {
+    deferred.Reject(e.Value());
+  }
   return deferred.Promise();
 }
 

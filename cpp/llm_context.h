@@ -22,6 +22,10 @@ public:
   std::vector<common_chat_msg> ParseMessages(const Napi::Array& arr);
   std::vector<common_chat_tool> ParseTools(const Napi::Array& arr);
 
+  // Acquire exclusive access for an inference operation. Returns false if busy.
+  bool AcquireInference();
+  void ReleaseInference();
+
   // Register this class with a Napi module exports object
   static void Register(Napi::Env env, Napi::Object& exports);
 
@@ -35,5 +39,6 @@ private:
   llama_context* ctx_ = nullptr;
   common_chat_templates_ptr chat_templates_;
   std::atomic<bool> abort_flag_{false};
+  std::atomic<bool> busy_{false};
   int n_ctx_ = 0;
 };

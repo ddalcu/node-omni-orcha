@@ -45,12 +45,24 @@ export function createTtsModel(modelPath: string): TtsModel {
         throw new Error('Model not loaded. Call load() first.');
       }
 
+      const trimmed = text.trim();
+      if (trimmed.length === 0) {
+        throw new Error('Text must not be empty. Qwen3-TTS requires meaningful text input.');
+      }
+
+      // Convert maxDurationSeconds to audio frames.
+      // Qwen3-TTS generates ~11.6 frames/second of audio (24kHz / 2048 hop).
+      // Default 90s, hard cap at 180s to prevent runaway generation.
+      const FRAMES_PER_SECOND = 11.6;
+      const maxSeconds = Math.min(options?.maxDurationSeconds ?? 90, 180);
+      const maxTokens = Math.ceil(maxSeconds * FRAMES_PER_SECOND);
+
       return serialize(async () =>
         await (nativeCtx.speak as Function)(text, {
           referenceAudioPath: options?.referenceAudioPath ?? '',
           temperature: options?.temperature ?? 0.9,
           topK: 50,
-          maxTokens: 4096,
+          maxTokens,
           repetitionPenalty: 1.05,
         }) as Buffer
       );

@@ -457,6 +457,15 @@ LlmContext::~LlmContext() {
   Cleanup();
 }
 
+bool LlmContext::AcquireInference() {
+  bool expected = false;
+  return busy_.compare_exchange_strong(expected, true);
+}
+
+void LlmContext::ReleaseInference() {
+  busy_.store(false);
+}
+
 void LlmContext::Cleanup() {
   chat_templates_.reset();
   if (ctx_) {
@@ -602,14 +611,16 @@ public:
     const common_chat_templates* chat_templates,
     std::vector<common_chat_msg> messages,
     NativeOpts opts,
-    std::atomic<bool>& abort_flag
+    std::atomic<bool>& abort_flag,
+    std::atomic<bool>& busy_flag
   ) : Napi::AsyncWorker(env),
       deferred_(Napi::Promise::Deferred::New(env)),
       model_(model), ctx_(ctx),
       chat_templates_(chat_templates),
       messages_(std::move(messages)),
       opts_(std::move(opts)),
-      abort_flag_(abort_flag) {}
+      abort_flag_(abort_flag),
+      busy_flag_(busy_flag) {}
 
   Napi::Promise Promise() { return deferred_.Promise(); }
 
@@ -626,10 +637,12 @@ protected:
   }
 
   void OnOK() override {
+    busy_flag_.store(false);
     deferred_.Resolve(resultToNapi(Env(), result_));
   }
 
   void OnError(const Napi::Error& e) override {
+    busy_flag_.store(false);
     deferred_.Reject(e.Value());
   }
 
@@ -641,6 +654,7 @@ private:
   std::vector<common_chat_msg> messages_;
   NativeOpts opts_;
   std::atomic<bool>& abort_flag_;
+  std::atomic<bool>& busy_flag_;
   GenerationResult result_;
 };
 
@@ -648,6 +662,11 @@ Napi::Value LlmContext::Complete(const Napi::CallbackInfo& info) {
   auto env = info.Env();
   if (!ctx_ || !model_) throw Napi::Error::New(env, "Model not loaded");
   if (info.Length() < 1 || !info[0].IsArray()) throw Napi::TypeError::New(env, "Messages array required");
+
+  if (!AcquireInference()) {
+    throw Napi::Error::New(env, "Context is busy — another inference operation is in progress. "
+      "Wait for the previous call to complete before starting a new one.");
+  }
 
   auto messages = ParseMessages(info[0].As<Napi::Array>());
   NativeOpts opts;
@@ -657,7 +676,7 @@ Napi::Value LlmContext::Complete(const Napi::CallbackInfo& info) {
 
   abort_flag_.store(false);
   auto* worker = new CompletionWorker(env, model_, ctx_, chat_templates_.get(),
-    std::move(messages), std::move(opts), abort_flag_);
+    std::move(messages), std::move(opts), abort_flag_, busy_);
   worker->Queue();
   return worker->Promise();
 }
@@ -673,6 +692,7 @@ public:
     std::vector<common_chat_msg> messages,
     NativeOpts opts,
     std::atomic<bool>& abort_flag,
+    std::atomic<bool>& busy_flag,
     Napi::Function callback
   ) : Napi::AsyncWorker(env),
       deferred_(Napi::Promise::Deferred::New(env)),
@@ -680,7 +700,8 @@ public:
       chat_templates_(chat_templates),
       messages_(std::move(messages)),
       opts_(std::move(opts)),
-      abort_flag_(abort_flag)
+      abort_flag_(abort_flag),
+      busy_flag_(busy_flag)
   {
     tsfn_ = Napi::ThreadSafeFunction::New(env, callback, "llm-stream", 0, 1);
   }
@@ -732,11 +753,13 @@ protected:
     });
 
     tsfn_.Release();
+    busy_flag_.store(false);
     deferred_.Resolve(Env().Undefined());
   }
 
   void OnError(const Napi::Error& e) override {
     tsfn_.Release();
+    busy_flag_.store(false);
     deferred_.Reject(e.Value());
   }
 
@@ -749,6 +772,7 @@ private:
   std::vector<common_chat_msg> messages_;
   NativeOpts opts_;
   std::atomic<bool>& abort_flag_;
+  std::atomic<bool>& busy_flag_;
   GenerationResult result_;
 };
 
@@ -757,6 +781,11 @@ Napi::Value LlmContext::Stream(const Napi::CallbackInfo& info) {
   if (!ctx_ || !model_) throw Napi::Error::New(env, "Model not loaded");
   if (info.Length() < 3 || !info[0].IsArray() || !info[2].IsFunction())
     throw Napi::TypeError::New(env, "stream(messages, opts, callback) required");
+
+  if (!AcquireInference()) {
+    throw Napi::Error::New(env, "Context is busy — another inference operation is in progress. "
+      "Wait for the previous call to complete before starting a new one.");
+  }
 
   auto messages = ParseMessages(info[0].As<Napi::Array>());
   Napi::Function callback = info[2].As<Napi::Function>();
@@ -768,7 +797,7 @@ Napi::Value LlmContext::Stream(const Napi::CallbackInfo& info) {
 
   abort_flag_.store(false);
   auto* worker = new StreamWorker(env, model_, ctx_, chat_templates_.get(),
-    std::move(messages), std::move(opts), abort_flag_, callback);
+    std::move(messages), std::move(opts), abort_flag_, busy_, callback);
   worker->Queue();
   return worker->Promise();
 }
@@ -781,11 +810,13 @@ public:
     Napi::Env env,
     llama_model* model,
     llama_context* ctx,
-    std::string text
+    std::string text,
+    std::atomic<bool>& busy_flag
   ) : Napi::AsyncWorker(env),
       deferred_(Napi::Promise::Deferred::New(env)),
       model_(model), ctx_(ctx),
-      text_(std::move(text)) {}
+      text_(std::move(text)),
+      busy_flag_(busy_flag) {}
 
   Napi::Promise Promise() { return deferred_.Promise(); }
 
@@ -861,10 +892,12 @@ protected:
       result[i] = embeddings_[i];
     }
 
+    busy_flag_.store(false);
     deferred_.Resolve(result);
   }
 
   void OnError(const Napi::Error& e) override {
+    busy_flag_.store(false);
     deferred_.Reject(e.Value());
   }
 
@@ -874,6 +907,7 @@ private:
   llama_context* ctx_;
   std::string text_;
   std::vector<double> embeddings_;
+  std::atomic<bool>& busy_flag_;
 };
 
 Napi::Value LlmContext::Embed(const Napi::CallbackInfo& info) {
@@ -886,9 +920,14 @@ Napi::Value LlmContext::Embed(const Napi::CallbackInfo& info) {
     throw Napi::TypeError::New(env, "Text string required");
   }
 
+  if (!AcquireInference()) {
+    throw Napi::Error::New(env, "Context is busy — another inference operation is in progress. "
+      "Wait for the previous call to complete before starting a new one.");
+  }
+
   std::string text = info[0].As<Napi::String>().Utf8Value();
 
-  auto* worker = new EmbedWorker(env, model_, ctx_, std::move(text));
+  auto* worker = new EmbedWorker(env, model_, ctx_, std::move(text), busy_);
   worker->Queue();
   return worker->Promise();
 }
@@ -901,11 +940,13 @@ public:
     Napi::Env env,
     llama_model* model,
     llama_context* ctx,
-    std::vector<std::string> texts
+    std::vector<std::string> texts,
+    std::atomic<bool>& busy_flag
   ) : Napi::AsyncWorker(env),
       deferred_(Napi::Promise::Deferred::New(env)),
       model_(model), ctx_(ctx),
-      texts_(std::move(texts)) {}
+      texts_(std::move(texts)),
+      busy_flag_(busy_flag) {}
 
   Napi::Promise Promise() { return deferred_.Promise(); }
 
@@ -992,10 +1033,12 @@ protected:
       result.Set((uint32_t)i, arr);
     }
 
+    busy_flag_.store(false);
     deferred_.Resolve(result);
   }
 
   void OnError(const Napi::Error& e) override {
+    busy_flag_.store(false);
     deferred_.Reject(e.Value());
   }
 
@@ -1005,6 +1048,7 @@ private:
   llama_context* ctx_;
   std::vector<std::string> texts_;
   std::vector<std::vector<double>> all_embeddings_;
+  std::atomic<bool>& busy_flag_;
 };
 
 Napi::Value LlmContext::EmbedBatch(const Napi::CallbackInfo& info) {
@@ -1017,17 +1061,23 @@ Napi::Value LlmContext::EmbedBatch(const Napi::CallbackInfo& info) {
     throw Napi::TypeError::New(env, "Array of strings required");
   }
 
+  if (!AcquireInference()) {
+    throw Napi::Error::New(env, "Context is busy — another inference operation is in progress. "
+      "Wait for the previous call to complete before starting a new one.");
+  }
+
   Napi::Array arr = info[0].As<Napi::Array>();
   std::vector<std::string> texts;
   texts.reserve(arr.Length());
   for (uint32_t i = 0; i < arr.Length(); i++) {
     if (!arr.Get(i).IsString()) {
+      ReleaseInference();
       throw Napi::TypeError::New(env, "All elements must be strings");
     }
     texts.push_back(arr.Get(i).As<Napi::String>().Utf8Value());
   }
 
-  auto* worker = new EmbedBatchWorker(env, model_, ctx_, std::move(texts));
+  auto* worker = new EmbedBatchWorker(env, model_, ctx_, std::move(texts), busy_);
   worker->Queue();
   return worker->Promise();
 }
@@ -1053,9 +1103,13 @@ Napi::Value LlmContext::Abort(const Napi::CallbackInfo& info) {
 
 static Napi::Value CreateLlmContext(const Napi::CallbackInfo& info) {
   auto env = info.Env();
-  Napi::Object ctx = LlmContext::constructor_.New({info[0], info[1]});
   auto deferred = Napi::Promise::Deferred::New(env);
-  deferred.Resolve(ctx);
+  try {
+    Napi::Object ctx = LlmContext::constructor_.New({info[0], info[1]});
+    deferred.Resolve(ctx);
+  } catch (const Napi::Error& e) {
+    deferred.Reject(e.Value());
+  }
   return deferred.Promise();
 }
 

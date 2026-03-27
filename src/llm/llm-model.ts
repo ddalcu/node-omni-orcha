@@ -18,7 +18,18 @@ import type {
 export function createLlmModel(modelPath: string): LlmModel {
   let nativeCtx: any = null;
   let loaded = false;
+  let loading = false;
   let metadata: GGUFModelInfo | null = null;
+
+  // Mutex to serialize access — llama.cpp contexts are not thread-safe.
+  // Concurrent operations on the same context corrupt KV cache state and cause segfaults.
+  let busy: Promise<void> = Promise.resolve();
+  function serialize<T>(fn: () => Promise<T>): Promise<T> {
+    const prev = busy;
+    let resolve: () => void;
+    busy = new Promise<void>(r => { resolve = r; });
+    return prev.then(fn).finally(() => resolve!());
+  }
 
   const model: LlmModel = {
     type: 'llm',
@@ -27,121 +38,133 @@ export function createLlmModel(modelPath: string): LlmModel {
     get metadata() { return metadata; },
 
     async load(options?: LlmLoadOptions) {
-      if (loaded) return;
+      if (loaded || loading) return;
+      loading = true;
 
-      const binding = loadBinding();
-      metadata = await readGGUFMetadata(modelPath);
+      try {
+        const binding = loadBinding();
+        metadata = await readGGUFMetadata(modelPath);
 
-      const gpu = detectGpu();
-      const contextSize = options?.contextSize
-        ?? (metadata ? calculateOptimalContextSize(metadata) : 4096);
-      const isEmbedding = options?.embeddings ?? false;
-      // Embedding models (e.g. nomic-bert) are small and fast on CPU — default to 0 GPU layers
-      // to avoid competing for VRAM with the main LLM. Users can still override with gpuLayers.
-      const defaultGpuLayers = gpu.backend === 'cpu' ? 0 : (isEmbedding ? 0 : -1);
-      const requestedGpuLayers = options?.gpuLayers ?? defaultGpuLayers;
-      const totalLayers = metadata?.blockCount ?? 0;
+        const gpu = detectGpu();
+        const contextSize = options?.contextSize
+          ?? (metadata ? calculateOptimalContextSize(metadata) : 4096);
+        const isEmbedding = options?.embeddings ?? false;
+        // Embedding models (e.g. nomic-bert) are small and fast on CPU — default to 0 GPU layers
+        // to avoid competing for VRAM with the main LLM. Users can still override with gpuLayers.
+        const defaultGpuLayers = gpu.backend === 'cpu' ? 0 : (isEmbedding ? 0 : -1);
+        const requestedGpuLayers = options?.gpuLayers ?? defaultGpuLayers;
+        const totalLayers = metadata?.blockCount ?? 0;
 
-      const buildOpts = (gpuLayers: number) => ({
-        contextSize,
-        gpuLayers,
-        flashAttn: options?.flashAttn ?? (gpu.backend !== 'cpu'),
-        embeddings: options?.embeddings ?? false,
-        batchSize: options?.batchSize ?? (gpu.backend !== 'cpu' ? 4096 : 512),
-        cacheTypeK: options?.cacheTypeK ?? (gpu.backend === 'metal' ? 'q8_0' : 'f16'),
-        cacheTypeV: options?.cacheTypeV ?? (gpu.backend === 'metal' ? 'q8_0' : 'f16'),
-        chatTemplate: options?.chatTemplate ?? '',
-      });
+        const buildOpts = (gpuLayers: number) => ({
+          contextSize,
+          gpuLayers,
+          flashAttn: options?.flashAttn ?? (gpu.backend !== 'cpu'),
+          embeddings: options?.embeddings ?? false,
+          batchSize: options?.batchSize ?? (gpu.backend !== 'cpu' ? 4096 : 512),
+          cacheTypeK: options?.cacheTypeK ?? (gpu.backend === 'metal' ? 'q8_0' : 'f16'),
+          cacheTypeV: options?.cacheTypeV ?? (gpu.backend === 'metal' ? 'q8_0' : 'f16'),
+          chatTemplate: options?.chatTemplate ?? '',
+        });
 
-      // When gpuLayers is -1 (all), retry with fewer layers on CUDA OOM
-      // so the model spills to system RAM instead of crashing.
-      let gpuLayers = requestedGpuLayers;
-      if (gpu.backend !== 'cpu' && gpuLayers === -1 && totalLayers > 0) {
-        // Try all layers first, then binary-search down on OOM
-        let hi = totalLayers + 1; // +1 for output layer
-        let lo = 0;
-        let lastError: Error | null = null;
+        // When gpuLayers is -1 (all), retry with fewer layers on CUDA OOM
+        // so the model spills to system RAM instead of crashing.
+        let gpuLayers = requestedGpuLayers;
+        if (gpu.backend !== 'cpu' && gpuLayers === -1 && totalLayers > 0) {
+          // Try all layers first, then binary-search down on OOM
+          let hi = totalLayers + 1; // +1 for output layer
+          let lo = 0;
+          let lastError: Error | null = null;
 
-        // First attempt: all layers
-        try {
-          nativeCtx = await (binding['createLlmContext'] as Function)(modelPath, buildOpts(-1));
-          loaded = true;
-          return;
-        } catch (err: any) {
-          if (!isOomError(err)) throw err;
-          lastError = err;
-          console.warn(`[omni] CUDA OOM with all ${hi} GPU layers, reducing...`);
-        }
-
-        // Binary search for max layers that fit
-        while (lo < hi) {
-          const mid = Math.floor((lo + hi) / 2);
+          // First attempt: all layers
           try {
-            nativeCtx = await (binding['createLlmContext'] as Function)(modelPath, buildOpts(mid));
-            // Succeeded — try more layers
-            lo = mid + 1;
-            // Keep this context as the best so far
-            break;
+            nativeCtx = await (binding['createLlmContext'] as Function)(modelPath, buildOpts(-1));
+            loaded = true;
+            return;
           } catch (err: any) {
             if (!isOomError(err)) throw err;
             lastError = err;
-            hi = mid;
+            console.warn(`[omni] CUDA OOM with all ${hi} GPU layers, reducing...`);
+          }
+
+          // Binary search for max layers that fit
+          while (lo < hi) {
+            const mid = Math.floor((lo + hi) / 2);
+            try {
+              nativeCtx = await (binding['createLlmContext'] as Function)(modelPath, buildOpts(mid));
+              // Succeeded — try more layers
+              lo = mid + 1;
+              // Keep this context as the best so far
+              break;
+            } catch (err: any) {
+              if (!isOomError(err)) throw err;
+              lastError = err;
+              hi = mid;
+            }
+          }
+
+          if (nativeCtx) {
+            console.warn(`[omni] Loaded with ${lo > 0 ? lo - 1 : 0}/${totalLayers} GPU layers (remaining on CPU)`);
+            loaded = true;
+            return;
+          }
+
+          // Last resort: CPU only
+          try {
+            console.warn('[omni] Falling back to CPU-only (0 GPU layers)');
+            nativeCtx = await (binding['createLlmContext'] as Function)(modelPath, buildOpts(0));
+            loaded = true;
+            return;
+          } catch (err: any) {
+            throw lastError ?? err;
           }
         }
 
-        if (nativeCtx) {
-          console.warn(`[omni] Loaded with ${lo > 0 ? lo - 1 : 0}/${totalLayers} GPU layers (remaining on CPU)`);
-          loaded = true;
-          return;
-        }
-
-        // Last resort: CPU only
-        try {
-          console.warn('[omni] Falling back to CPU-only (0 GPU layers)');
-          nativeCtx = await (binding['createLlmContext'] as Function)(modelPath, buildOpts(0));
-          loaded = true;
-          return;
-        } catch (err: any) {
-          throw lastError ?? err;
-        }
+        nativeCtx = await (binding['createLlmContext'] as Function)(modelPath, buildOpts(gpuLayers));
+        loaded = true;
+      } finally {
+        loading = false;
       }
-
-      nativeCtx = await (binding['createLlmContext'] as Function)(modelPath, buildOpts(gpuLayers));
-      loaded = true;
     },
 
     async complete(messages: ChatMessage[], options?: CompletionOptions): Promise<CompletionResult> {
       assertLoaded();
+      return serialize(async () => {
+        const nativeOpts: Record<string, unknown> = {
+          temperature: options?.temperature ?? 0.7,
+          maxTokens: options?.maxTokens ?? 2048,
+          stopSequences: options?.stopSequences ?? [],
+        };
 
-      const nativeOpts: Record<string, unknown> = {
-        temperature: options?.temperature ?? 0.7,
-        maxTokens: options?.maxTokens ?? 2048,
-        stopSequences: options?.stopSequences ?? [],
-      };
+        // Serialize tools for C++ (parameters must be JSON string)
+        if (options?.tools?.length) {
+          nativeOpts.tools = options.tools.map(t => ({
+            name: t.name,
+            description: t.description,
+            parameters: JSON.stringify(t.parameters),
+          }));
+          nativeOpts.toolChoice = options.toolChoice ?? 'auto';
+        }
 
-      // Serialize tools for C++ (parameters must be JSON string)
-      if (options?.tools?.length) {
-        nativeOpts.tools = options.tools.map(t => ({
-          name: t.name,
-          description: t.description,
-          parameters: JSON.stringify(t.parameters),
-        }));
-        nativeOpts.toolChoice = options.toolChoice ?? 'auto';
-      }
+        if (options?.thinkingBudget != null && options.thinkingBudget >= 0) {
+          nativeOpts.thinkingBudget = options.thinkingBudget;
+        }
 
-      if (options?.thinkingBudget != null && options.thinkingBudget >= 0) {
-        nativeOpts.thinkingBudget = options.thinkingBudget;
-      }
-
-      const result = await (nativeCtx.complete as Function)(
-        formatMessages(messages),
-        nativeOpts,
-      );
-      return result as CompletionResult;
+        const result = await (nativeCtx.complete as Function)(
+          formatMessages(messages),
+          nativeOpts,
+        );
+        return result as CompletionResult;
+      });
     },
 
     async *stream(messages: ChatMessage[], options?: CompletionOptions): AsyncIterable<StreamChunk> {
       assertLoaded();
+
+      // Acquire the mutex before starting the stream — hold it until stream completes.
+      const prev = busy;
+      let releaseMutex: () => void;
+      busy = new Promise<void>(r => { releaseMutex = r; });
+      await prev;
 
       const nativeOpts: Record<string, unknown> = {
         temperature: options?.temperature ?? 0.7,
@@ -166,6 +189,7 @@ export function createLlmModel(modelPath: string): LlmModel {
       const pending: StreamChunk[] = [];
       let notify: (() => void) | null = null;
       let streamDone = false;
+      let streamError: Error | null = null;
 
       const onChunk = (chunk: StreamChunk) => {
         pending.push(chunk);
@@ -176,13 +200,19 @@ export function createLlmModel(modelPath: string): LlmModel {
         formatMessages(messages),
         nativeOpts,
         onChunk,
-      );
+      ).catch((err: Error) => {
+        // If the native worker errors (e.g. template failure), wake the consumer
+        // so it doesn't hang forever waiting for chunks that will never arrive.
+        streamError = err;
+        if (notify) { notify(); notify = null; }
+      });
 
       try {
         while (!streamDone) {
           if (pending.length === 0) {
             await new Promise<void>(r => { notify = r; });
           }
+          if (streamError) throw streamError;
           while (pending.length > 0) {
             const chunk = pending.shift()!;
             yield chunk;
@@ -196,25 +226,35 @@ export function createLlmModel(modelPath: string): LlmModel {
         }
       } finally {
         await streamPromise;
+        releaseMutex!();
       }
     },
 
     async embed(text: string): Promise<Float64Array> {
       assertLoaded();
-      return await (nativeCtx.embed as Function)(text) as Float64Array;
+      return serialize(async () =>
+        await (nativeCtx.embed as Function)(text) as Float64Array
+      );
     },
 
     async embedBatch(texts: string[]): Promise<Float64Array[]> {
       assertLoaded();
-      return await (nativeCtx.embedBatch as Function)(texts) as Float64Array[];
+      return serialize(async () =>
+        await (nativeCtx.embedBatch as Function)(texts) as Float64Array[]
+      );
     },
 
     async unload() {
       if (!loaded || !nativeCtx) return;
-      await (nativeCtx.unload as Function)();
-      nativeCtx = null;
-      loaded = false;
-      metadata = null;
+      // Wait for any in-flight operation to complete before destroying the context.
+      // Destroying while an AsyncWorker is using the context causes a segfault.
+      await serialize(async () => {
+        if (!nativeCtx) return;
+        await (nativeCtx.unload as Function)();
+        nativeCtx = null;
+        loaded = false;
+        metadata = null;
+      });
     },
   };
 

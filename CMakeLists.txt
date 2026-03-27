@@ -112,6 +112,7 @@ add_library(qwen3_tts STATIC
   engine/tts/qwen3_tts.cpp
   engine/tts/qwen3tts_c_api.cpp
   engine/tts/coreml_code_predictor_stub.cpp
+  engine/vendor/miniaudio/miniaudio_impl.c
 )
 target_include_directories(qwen3_tts PUBLIC
   ${CMAKE_SOURCE_DIR}/engine/tts
@@ -119,6 +120,7 @@ target_include_directories(qwen3_tts PUBLIC
 target_include_directories(qwen3_tts PRIVATE
   ${CMAKE_SOURCE_DIR}/engine/ggml/include
   ${CMAKE_SOURCE_DIR}/engine/ggml/src
+  ${CMAKE_SOURCE_DIR}/engine/vendor/miniaudio
 )
 target_link_libraries(qwen3_tts PRIVATE ggml)
 target_compile_features(qwen3_tts PRIVATE cxx_std_17)

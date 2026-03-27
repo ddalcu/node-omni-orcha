@@ -35,4 +35,5 @@ private:
   bool offload_to_cpu_ = false;
   bool flash_attn_ = true;
   bool vae_decode_only_ = true;
+  bool is_video_model_ = false;  // true for WAN/video models (t5xxl without llm)
 };

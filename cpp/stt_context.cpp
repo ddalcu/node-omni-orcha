@@ -19,6 +19,9 @@ SttContext::SttContext(const Napi::CallbackInfo& info)
   }
 
   model_path_ = info[0].As<Napi::String>().Utf8Value();
+  if (model_path_.empty()) {
+    throw Napi::Error::New(env, "Model path must not be empty");
+  }
 
   whisper_context_params cparams = whisper_context_default_params();
   cparams.use_gpu = true;
@@ -173,6 +176,9 @@ Napi::Value SttContext::Transcribe(const Napi::CallbackInfo& info) {
   }
 
   auto buf = info[0].As<Napi::Buffer<uint8_t>>();
+  if (buf.Length() < 2) {
+    throw Napi::Error::New(env, "Audio buffer too small — need at least one 16-bit sample (2 bytes)");
+  }
   auto pcmf32 = pcm16_to_f32(buf.Data(), buf.Length());
 
   std::string language = "auto";
@@ -257,6 +263,9 @@ Napi::Value SttContext::DetectLanguage(const Napi::CallbackInfo& info) {
   }
 
   auto buf = info[0].As<Napi::Buffer<uint8_t>>();
+  if (buf.Length() < 2) {
+    throw Napi::Error::New(env, "Audio buffer too small — need at least one 16-bit sample (2 bytes)");
+  }
   auto pcmf32 = pcm16_to_f32(buf.Data(), buf.Length());
 
   auto* worker = new DetectLanguageWorker(env, ctx_, std::move(pcmf32));

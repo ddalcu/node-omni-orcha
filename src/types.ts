@@ -254,7 +254,7 @@ export interface TtsLoadOptions {
 }
 
 export interface SpeakOptions {
-  /** Path to reference audio WAV for voice cloning (24kHz mono recommended) */
+  /** Path to reference audio for voice cloning — supports WAV, MP3, FLAC, OGG (24kHz mono recommended) */
   referenceAudioPath?: string;
   /** Sampling temperature (default 0.9) */
   temperature?: number;

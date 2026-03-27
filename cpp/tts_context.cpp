@@ -55,6 +55,9 @@ TtsContext::TtsContext(const Napi::CallbackInfo& info)
   }
 
   std::string modelDir = info[0].As<Napi::String>().Utf8Value();
+  if (modelDir.empty()) {
+    throw Napi::Error::New(env, "Model directory path must not be empty");
+  }
   int threads = 4;
 
   if (info.Length() >= 2 && info[1].IsObject()) {
@@ -144,6 +147,9 @@ Napi::Value TtsContext::Speak(const Napi::CallbackInfo& info) {
     throw Napi::TypeError::New(env, "Text string required");
 
   std::string text = info[0].As<Napi::String>().Utf8Value();
+  if (text.empty()) {
+    throw Napi::Error::New(env, "Text must not be empty");
+  }
   std::string referenceAudioPath = "";
 
   Qwen3TtsParams params;

@@ -181,7 +181,7 @@ int32_t qwen3_tts_extract_embedding_file(
         float * embedding_out, int32_t max_size) {
     if (!tts || !reference_audio_path || !embedding_out || max_size <= 0) return -1;
 
-    // Load WAV and resample to 24kHz
+    // Load audio and resample to 24kHz
     std::vector<float> ref_samples;
     int ref_sample_rate;
     if (!qwen3_tts::load_audio_file(reference_audio_path, ref_samples, ref_sample_rate)) {

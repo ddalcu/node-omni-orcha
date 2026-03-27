@@ -63,6 +63,9 @@ ImageContext::ImageContext(const Napi::CallbackInfo& info)
   }
 
   model_path_ = info[0].As<Napi::String>().Utf8Value();
+  if (model_path_.empty()) {
+    throw Napi::TypeError::New(env, "Model path must not be empty");
+  }
 
   if (info.Length() >= 2 && info[1].IsObject()) {
     Napi::Object opts = info[1].As<Napi::Object>();
@@ -79,6 +82,10 @@ ImageContext::ImageContext(const Napi::CallbackInfo& info)
     if (opts.Has("vaeDecodeOnly") && opts.Get("vaeDecodeOnly").IsBoolean()) {
       vae_decode_only_ = opts.Get("vaeDecodeOnly").As<Napi::Boolean>().Value();
     }
+
+    // Video models (WAN) use t5xxl text encoder, while FLUX image models use llm.
+    // SD models use neither. Only t5xxl-based models support generateVideo.
+    is_video_model_ = !t5xxl_path_.empty() && llm_path_.empty();
   }
 }
 
@@ -334,6 +341,11 @@ Napi::Value ImageContext::Generate(const Napi::CallbackInfo& info) {
     }
   }
 
+  if (width < 1 || height < 1)
+    throw Napi::Error::New(env, "Width and height must be at least 1");
+  if (steps < 1)
+    throw Napi::Error::New(env, "Steps must be at least 1");
+
   auto* worker = new GenerateWorker(
     env, ctx_, std::move(prompt), std::move(negativePrompt),
     width, height, steps, cfgScale, seed,
@@ -518,6 +530,8 @@ Napi::Value ImageContext::GenerateVideo(const Napi::CallbackInfo& info) {
   auto env = info.Env();
 
   if (!ctx_) throw Napi::Error::New(env, "Image context not loaded");
+  if (!is_video_model_)
+    throw Napi::Error::New(env, "This model does not support video generation. Use a WAN/video model with t5xxlPath.");
   if (info.Length() < 1 || !info[0].IsString())
     throw Napi::TypeError::New(env, "Prompt string required");
 
@@ -571,6 +585,13 @@ Napi::Value ImageContext::GenerateVideo(const Napi::CallbackInfo& info) {
       highNoiseSpecified = true;
     }
   }
+
+  if (width < 1 || height < 1)
+    throw Napi::Error::New(env, "Width and height must be at least 1");
+  if (videoFrames < 1)
+    throw Napi::Error::New(env, "videoFrames must be at least 1");
+  if (steps < 1)
+    throw Napi::Error::New(env, "Steps must be at least 1");
 
   // Extract init/end image buffers for I2V / TI2V / FLF2V
   std::vector<uint8_t> initImageData, endImageData;

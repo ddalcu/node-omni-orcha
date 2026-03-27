@@ -395,6 +395,9 @@ LlmContext::LlmContext(const Napi::CallbackInfo& info)
   }
 
   std::string modelPath = info[0].As<Napi::String>().Utf8Value();
+  if (modelPath.empty()) {
+    throw Napi::Error::New(env, "Model path must not be empty");
+  }
   Napi::Object opts = info[1].As<Napi::Object>();
 
   int contextSize = getInt32Option(opts, "contextSize", 4096);

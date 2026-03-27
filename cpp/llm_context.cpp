@@ -117,6 +117,20 @@ static GenerationResult run_generation(
   tokens.resize(n_tokens);
   result.input_tokens = n_tokens;
 
+  // Validate prompt fits in context window (need at least 1 token for generation)
+  if (n_tokens >= n_ctx) {
+    result.error = "Prompt too long: " + std::to_string(n_tokens)
+                 + " tokens exceeds context size of " + std::to_string(n_ctx)
+                 + ". Increase contextSize or reduce the conversation/tool definitions.";
+    return result;
+  }
+
+  // Cap max_tokens so prompt + generation doesn't overflow the KV cache
+  int available = n_ctx - n_tokens;
+  if (max_tokens > available) {
+    max_tokens = available;
+  }
+
   // Clear KV cache
   llama_memory_t mem = llama_get_memory(ctx);
   if (mem) {
@@ -790,6 +804,13 @@ protected:
     }
     tokens.resize(n_tokens);
 
+    int n_ctx = (int)llama_n_ctx(ctx_);
+    if (n_tokens > n_ctx) {
+      SetError("Text too long for embedding: " + std::to_string(n_tokens)
+               + " tokens exceeds context size of " + std::to_string(n_ctx));
+      return;
+    }
+
     llama_memory_t mem = llama_get_memory(ctx_);
     if (mem) {
       llama_memory_clear(mem, true);
@@ -906,6 +927,14 @@ protected:
         return;
       }
       tokens.resize(n_tokens);
+
+      int n_ctx = (int)llama_n_ctx(ctx_);
+      if (n_tokens > n_ctx) {
+        SetError("Text at index " + std::to_string(t) + " too long: "
+                 + std::to_string(n_tokens) + " tokens exceeds context size of "
+                 + std::to_string(n_ctx));
+        return;
+      }
 
       llama_memory_t mem = llama_get_memory(ctx_);
       if (mem) {

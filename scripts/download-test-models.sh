@@ -3,11 +3,12 @@
 # All models go to ~/.orcha/workspace/.models/
 #
 # Usage:
-#   bash scripts/download-test-models.sh          # LLM + STT (basics, ~1GB)
-#   bash scripts/download-test-models.sh --tts    # + Qwen3-TTS (~1.2GB)
-#   bash scripts/download-test-models.sh --image  # + FLUX 2 Klein (~5GB)
-#   bash scripts/download-test-models.sh --video  # + WAN 2.2 5B (~5GB)
-#   bash scripts/download-test-models.sh --all    # Everything
+#   bash scripts/download-test-models.sh           # LLM + STT (basics, ~1GB)
+#   bash scripts/download-test-models.sh --tts     # + Qwen3-TTS (~1.2GB)
+#   bash scripts/download-test-models.sh --image   # + FLUX 2 Klein (~5GB)
+#   bash scripts/download-test-models.sh --video   # + WAN 2.2 5B (~5GB)
+#   bash scripts/download-test-models.sh --vision  # + Qwen2-VL 2B (~1.8GB)
+#   bash scripts/download-test-models.sh --all     # Everything
 
 set -e
 
@@ -48,11 +49,16 @@ download_if_missing \
   "TinyLlama 1.1B Q4_K_M"
 
 echo ""
-echo "=== LLM: Qwen3.5-4B (~2.5GB) ==="
+echo "=== LLM: Qwen3.5-4B (~2.5GB + 641MB mmproj) ==="
 download_if_missing \
   "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-IQ4_NL.gguf" \
   "$MODELS_DIR/qwen3-5-4b/Qwen3.5-4B-IQ4_NL.gguf" \
   "Qwen3.5-4B IQ4_NL"
+
+download_if_missing \
+  "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/mmproj-F16.gguf" \
+  "$MODELS_DIR/qwen3-5-4b/mmproj-F16.gguf" \
+  "Qwen3.5-4B mmproj F16 (vision encoder)"
 
 echo ""
 echo "=== STT: Whisper Tiny (~75MB) ==="
@@ -139,12 +145,36 @@ if $ALL || has_flag "--video" "$@"; then
     "UMT5-XXL encoder Q8_0 (~6GB)"
 fi
 
+# ─── Vision: Qwen2-VL 2B Instruct (~1.8GB total) ───
+
+if $ALL || has_flag "--vision" "$@"; then
+  echo ""
+  echo "=== Vision: Qwen2-VL 2B Instruct (~1.8GB total) ==="
+  mkdir -p "$MODELS_DIR/qwen2-vl-2b"
+
+  download_if_missing \
+    "https://huggingface.co/ggml-org/Qwen2-VL-2B-Instruct-GGUF/resolve/main/Qwen2-VL-2B-Instruct-Q4_K_M.gguf" \
+    "$MODELS_DIR/qwen2-vl-2b/Qwen2-VL-2B-Instruct-Q4_K_M.gguf" \
+    "Qwen2-VL 2B Instruct Q4_K_M (~0.9GB)"
+
+  download_if_missing \
+    "https://huggingface.co/ggml-org/Qwen2-VL-2B-Instruct-GGUF/resolve/main/mmproj-Qwen2-VL-2B-Instruct-f16.gguf" \
+    "$MODELS_DIR/qwen2-vl-2b/mmproj-Qwen2-VL-2B-Instruct-f16.gguf" \
+    "Qwen2-VL 2B mmproj F16 (~1.2GB)"
+
+  # Download a test image
+  download_if_missing \
+    "https://upload.wikimedia.org/wikipedia/commons/thumb/4/47/PNG_transparency_demonstration_1.png/280px-PNG_transparency_demonstration_1.png" \
+    "$MODELS_DIR/qwen2-vl-2b/test-image.png" \
+    "Test image for vision"
+fi
+
 # ─── Summary ───
 
 echo ""
 echo "Done. Models directory: $MODELS_DIR"
 echo ""
-for subdir in tinyllama qwen3-5-4b whisper-tiny qwen3-tts flux2-klein wan22-5b; do
+for subdir in tinyllama qwen3-5-4b whisper-tiny qwen3-tts flux2-klein wan22-5b qwen2-vl-2b; do
   if [ -d "$MODELS_DIR/$subdir" ]; then
     echo "$subdir/:"
     ls -lhS "$MODELS_DIR/$subdir/" 2>/dev/null || true
@@ -160,8 +190,9 @@ echo "  node scripts/samuel-jackson-test.ts       # LLM + TTS + STT + Image"
 echo ""
 if ! $ALL; then
   echo "Download more:"
-  has_flag "--tts"   "$@" || echo "  bash scripts/download-test-models.sh --tts    # Qwen3-TTS (~1.2GB)"
-  has_flag "--image" "$@" || echo "  bash scripts/download-test-models.sh --image  # FLUX 2 Klein (~5GB)"
-  has_flag "--video" "$@" || echo "  bash scripts/download-test-models.sh --video  # WAN 2.2 5B (~5GB)"
+  has_flag "--tts"    "$@" || echo "  bash scripts/download-test-models.sh --tts    # Qwen3-TTS (~1.2GB)"
+  has_flag "--image"  "$@" || echo "  bash scripts/download-test-models.sh --image  # FLUX 2 Klein (~5GB)"
+  has_flag "--video"  "$@" || echo "  bash scripts/download-test-models.sh --video  # WAN 2.2 5B (~5GB)"
+  has_flag "--vision" "$@" || echo "  bash scripts/download-test-models.sh --vision # Qwen2-VL 2B (~1.8GB)"
   echo "  bash scripts/download-test-models.sh --all    # Everything"
 fi

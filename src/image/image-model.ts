@@ -1,6 +1,7 @@
 import { loadBinding } from '../binding-loader.ts';
 import type {
   ImageModel,
+  ImageModelStatus,
   ImageLoadOptions,
   ImageOptions,
   VideoOptions,
@@ -17,20 +18,23 @@ export function createImageModel(modelPath: string): ImageModel {
   let nativeCtx: any = null;
   let loaded = false;
   let loading = false;
+  let isBusy = false;
 
   // Mutex to serialize access — sd.cpp contexts are not thread-safe.
-  let busy: Promise<void> = Promise.resolve();
+  let busyPromise: Promise<void> = Promise.resolve();
   function serialize<T>(fn: () => Promise<T>): Promise<T> {
-    const prev = busy;
+    const prev = busyPromise;
     let resolve: () => void;
-    busy = new Promise<void>(r => { resolve = r; });
-    return prev.then(fn).finally(() => resolve!());
+    busyPromise = new Promise<void>(r => { resolve = r; });
+    return prev.then(() => { isBusy = true; return fn(); }).finally(() => { isBusy = false; resolve!(); });
   }
 
   const model: ImageModel = {
     type: 'image',
     get modelPath() { return modelPath; },
     get loaded() { return loaded; },
+    get loading() { return loading; },
+    get busy() { return isBusy; },
 
     async load(options?: ImageLoadOptions) {
       if (loaded || loading) return;
@@ -137,6 +141,16 @@ export function createImageModel(modelPath: string): ImageModel {
         nativeCtx = null;
         loaded = false;
       });
+    },
+
+    getStatus(): ImageModelStatus {
+      return {
+        type: 'image',
+        modelPath,
+        loaded,
+        loading,
+        busy: isBusy,
+      };
     },
   };
 

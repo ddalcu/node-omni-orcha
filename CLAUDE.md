@@ -5,7 +5,7 @@ Unified native Node.js inference engine — single `omni.node` for LLM, STT, TTS
 ## Architecture
 
 - **Single `omni.node`** — all engines share one ggml build, one binary, no symbol conflicts
-- **`engine/`** — llama.cpp fork with whisper, qwen3-tts, and stable-diffusion sources compiled against shared ggml
+- **`engine/`** — llama.cpp fork with whisper, qwen3-tts, mtmd (multimodal/vision), and stable-diffusion sources compiled against shared ggml
 - **cmake-js** build system with Metal/CUDA/CPU backends
 - **Node 25 native TypeScript** — no build step, type-stripping
 - **node:test** for testing
@@ -20,6 +20,7 @@ engine/        llama.cpp fork (ggml + LLM core)
   include/     llama.h public headers
   stt/         Whisper STT (compiled against shared ggml)
   tts/         Qwen3-TTS (compiled against shared ggml)
+  mtmd/        Multimodal/Vision (CLIP encoder, image preprocessing, compiled against shared ggml)
   diffusion/   stable-diffusion.cpp (FLUX 2, Wan 2.2, compiled against shared ggml)
   vendor/      Third-party headers (cpp-httplib, stb, nlohmann)
 cpp/           N-API binding (one unified omni.node)
@@ -65,6 +66,12 @@ node scripts/full-integration-test.ts
 
 # Samuel L. Jackson themed test (LLM + TTS + STT + Image)
 node scripts/samuel-jackson-test.ts
+
+# Vision/Multimodal tests (requires --vision models)
+bash scripts/download-test-models.sh --vision
+node scripts/vision-integration-test.ts   # basic vision inference
+node scripts/vision-stress-test.ts        # stress test
+node scripts/vision-crash-test.ts         # crash hardening
 ```
 
 ## API
@@ -77,6 +84,18 @@ const llm = await loadModel('model.gguf', { type: 'llm', contextSize: 4096 })
 const result = await llm.complete([{ role: 'user', content: 'Hello' }])
 const result2 = await llm.complete([{ role: 'user', content: 'Hello' }], { thinkingBudget: 0 }) // no reasoning
 const embedding = await llm.embed('some text')
+
+// Vision LLM (Qwen2-VL, LLaVA, Gemma3, etc.)
+const vlm = await loadModel('qwen2-vl-2b.gguf', {
+  type: 'llm', contextSize: 4096, mmprojPath: 'mmproj.gguf'
+})
+const desc = await vlm.complete([{
+  role: 'user',
+  content: [
+    { type: 'image', data: pngBuffer },            // Buffer, or { path: 'photo.jpg' }
+    { type: 'text', text: 'Describe this image.' },
+  ],
+}])
 
 // Image (FLUX 2 / Wan 2.2)
 const img = createModel('flux2.gguf', 'image')
@@ -108,6 +127,10 @@ const wav = await tts.speak('Hello world', { referenceAudioPath: 'voice.wav' })
 - All inference runs off the event loop via AsyncWorker
 - GPU auto-detected (Metal on macOS, CUDA on Linux/Windows, CPU fallback)
 - `thinkingBudget`: -1 = reasoning enabled (default), 0 = disabled, N>0 = capped at N tokens
+- Vision models require `mmprojPath` in load options — a separate GGUF file for the vision encoder
+- `ChatMessage.content` accepts `string` or `ContentPart[]` for multimodal (text + image) input
+- Image input: Buffer (PNG/JPEG/BMP/GIF), file path, or raw RGB pixels with width/height
+- Vision architectures: Qwen2-VL, Qwen3-VL, LLaVA, Gemma3, CogVLM, Chameleon, MiniCPM, etc.
 
 ## Platforms
 

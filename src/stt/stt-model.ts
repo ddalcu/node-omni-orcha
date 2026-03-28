@@ -1,6 +1,7 @@
 import { loadBinding } from '../binding-loader.ts';
 import type {
   SttModel,
+  SttModelStatus,
   TranscribeOptions,
   TranscribeResult,
 } from '../types.ts';
@@ -14,20 +15,23 @@ export function createSttModel(modelPath: string): SttModel {
   let nativeCtx: any = null;
   let loaded = false;
   let loading = false;
+  let isBusy = false;
 
   // Mutex to serialize access — whisper contexts are not thread-safe.
-  let busy: Promise<void> = Promise.resolve();
+  let busyPromise: Promise<void> = Promise.resolve();
   function serialize<T>(fn: () => Promise<T>): Promise<T> {
-    const prev = busy;
+    const prev = busyPromise;
     let resolve: () => void;
-    busy = new Promise<void>(r => { resolve = r; });
-    return prev.then(fn).finally(() => resolve!());
+    busyPromise = new Promise<void>(r => { resolve = r; });
+    return prev.then(() => { isBusy = true; return fn(); }).finally(() => { isBusy = false; resolve!(); });
   }
 
   const model: SttModel = {
     type: 'stt',
     get modelPath() { return modelPath; },
     get loaded() { return loaded; },
+    get loading() { return loading; },
+    get busy() { return isBusy; },
 
     async load() {
       if (loaded || loading) return;
@@ -71,6 +75,16 @@ export function createSttModel(modelPath: string): SttModel {
         nativeCtx = null;
         loaded = false;
       });
+    },
+
+    getStatus(): SttModelStatus {
+      return {
+        type: 'stt',
+        modelPath,
+        loaded,
+        loading,
+        busy: isBusy,
+      };
     },
   };
 

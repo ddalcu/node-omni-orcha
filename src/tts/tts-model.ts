@@ -1,6 +1,7 @@
 import { loadBinding } from '../binding-loader.ts';
 import type {
   TtsModel,
+  TtsModelStatus,
   TtsLoadOptions,
   SpeakOptions,
 } from '../types.ts';
@@ -13,20 +14,23 @@ export function createTtsModel(modelPath: string): TtsModel {
   let nativeCtx: any = null;
   let loaded = false;
   let loading = false;
+  let isBusy = false;
 
   // Mutex to serialize access — TTS contexts are not thread-safe.
-  let busy: Promise<void> = Promise.resolve();
+  let busyPromise: Promise<void> = Promise.resolve();
   function serialize<T>(fn: () => Promise<T>): Promise<T> {
-    const prev = busy;
+    const prev = busyPromise;
     let resolve: () => void;
-    busy = new Promise<void>(r => { resolve = r; });
-    return prev.then(fn).finally(() => resolve!());
+    busyPromise = new Promise<void>(r => { resolve = r; });
+    return prev.then(() => { isBusy = true; return fn(); }).finally(() => { isBusy = false; resolve!(); });
   }
 
   const model: TtsModel = {
     type: 'tts',
     get modelPath() { return modelPath; },
     get loaded() { return loaded; },
+    get loading() { return loading; },
+    get busy() { return isBusy; },
 
     async load(_options?: TtsLoadOptions) {
       if (loaded || loading) return;
@@ -76,6 +80,16 @@ export function createTtsModel(modelPath: string): TtsModel {
         nativeCtx = null;
         loaded = false;
       });
+    },
+
+    getStatus(): TtsModelStatus {
+      return {
+        type: 'tts',
+        modelPath,
+        loaded,
+        loading,
+        busy: isBusy,
+      };
     },
   };
 

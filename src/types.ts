@@ -39,6 +39,12 @@ export interface LlmLoadOptions {
   cacheTypeV?: 'f16' | 'q8_0' | 'q4_0';
   /** Override the chat template (Jinja format). Use when the model GGUF doesn't include one. */
   chatTemplate?: string;
+  /** Path to multimodal projector GGUF (mmproj). Required for vision models. */
+  mmprojPath?: string;
+  /** Minimum tokens per image for dynamic-resolution vision models. Default: read from model metadata. */
+  imageMinTokens?: number;
+  /** Maximum tokens per image for dynamic-resolution vision models. Default: read from model metadata. */
+  imageMaxTokens?: number;
 }
 
 export interface ToolDefinition {
@@ -53,9 +59,33 @@ export interface ToolCall {
   args: string; // JSON string of arguments
 }
 
+/** A text content part in a multimodal message */
+export interface TextContentPart {
+  type: 'text';
+  text: string;
+}
+
+/** An image content part — provide file bytes, a file path, or raw RGB pixels */
+export interface ImageContentPart {
+  type: 'image';
+  /** Image file bytes (PNG, JPEG, BMP, GIF, WebP) */
+  data?: Buffer;
+  /** Path to an image file */
+  path?: string;
+  /** Raw RGB pixel data (3 bytes per pixel, row-major). Must also set width/height. */
+  rgbData?: Buffer;
+  /** Width in pixels (required when using rgbData) */
+  width?: number;
+  /** Height in pixels (required when using rgbData) */
+  height?: number;
+}
+
+export type ContentPart = TextContentPart | ImageContentPart;
+
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string;
+  /** Text string, or array of content parts for multimodal messages */
+  content: string | ContentPart[];
   tool_call_id?: string;
   name?: string;
   tool_calls?: ToolCall[];
@@ -99,7 +129,11 @@ export interface LlmModel {
   readonly type: 'llm';
   readonly modelPath: string;
   readonly loaded: boolean;
+  readonly loading: boolean;
+  readonly busy: boolean;
   readonly metadata: GGUFModelInfo | null;
+  /** Whether this model has a vision encoder loaded (mmproj). */
+  readonly hasVision: boolean;
 
   load(options?: LlmLoadOptions): Promise<void>;
   complete(messages: ChatMessage[], options?: CompletionOptions): Promise<CompletionResult>;
@@ -107,6 +141,7 @@ export interface LlmModel {
   embed(text: string): Promise<Float64Array>;
   embedBatch(texts: string[]): Promise<Float64Array[]>;
   unload(): Promise<void>;
+  getStatus(): LlmModelStatus;
 }
 
 // --- Image Types ---
@@ -210,12 +245,15 @@ export interface ImageModel {
   readonly type: 'image';
   readonly modelPath: string;
   readonly loaded: boolean;
+  readonly loading: boolean;
+  readonly busy: boolean;
 
   load(options?: ImageLoadOptions): Promise<void>;
   generate(prompt: string, options?: ImageOptions): Promise<Buffer>;
   /** Generate video frames. Returns array of PNG buffers (one per frame). */
   generateVideo(prompt: string, options?: VideoOptions): Promise<Buffer[]>;
   unload(): Promise<void>;
+  getStatus(): ImageModelStatus;
 }
 
 // --- STT Types ---
@@ -240,11 +278,14 @@ export interface SttModel {
   readonly type: 'stt';
   readonly modelPath: string;
   readonly loaded: boolean;
+  readonly loading: boolean;
+  readonly busy: boolean;
 
   load(): Promise<void>;
   transcribe(audio: Buffer, options?: TranscribeOptions): Promise<TranscribeResult>;
   detectLanguage(audio: Buffer): Promise<string>;
   unload(): Promise<void>;
+  getStatus(): SttModelStatus;
 }
 
 // --- TTS Types ---
@@ -266,10 +307,13 @@ export interface TtsModel {
   readonly type: 'tts';
   readonly modelPath: string;
   readonly loaded: boolean;
+  readonly loading: boolean;
+  readonly busy: boolean;
 
   load(options?: TtsLoadOptions): Promise<void>;
   speak(text: string, options?: SpeakOptions): Promise<Buffer>;
   unload(): Promise<void>;
+  getStatus(): TtsModelStatus;
 }
 
 // Union
@@ -277,3 +321,68 @@ export type Model = LlmModel | ImageModel | SttModel | TtsModel;
 
 // Load options with type hint
 export type LoadModelOptions = (LlmLoadOptions | ImageLoadOptions) & { type?: ModelType };
+
+// --- Status Types ---
+
+export interface CpuInfo {
+  model: string;
+  cores: number;
+  threads: number;
+  /** MHz */
+  speed: number;
+}
+
+export interface MemoryInfo {
+  totalBytes: number;
+  usedBytes: number;
+  freeBytes: number;
+  usagePercent: number;
+}
+
+export interface ProcessMemoryInfo {
+  rssBytes: number;
+  heapTotalBytes: number;
+  heapUsedBytes: number;
+  externalBytes: number;
+}
+
+export interface SystemStatus {
+  platform: string;
+  arch: string;
+  nodeVersion: string;
+  hostname: string;
+  cpu: CpuInfo;
+  memory: MemoryInfo;
+  processMemory: ProcessMemoryInfo;
+  gpu: GpuInfo;
+  /** Process uptime in seconds */
+  uptimeSeconds: number;
+  /** OS uptime in seconds */
+  osUptimeSeconds: number;
+}
+
+export interface ModelStatus {
+  type: ModelType;
+  modelPath: string;
+  loaded: boolean;
+  loading: boolean;
+  busy: boolean;
+}
+
+export interface LlmModelStatus extends ModelStatus {
+  type: 'llm';
+  metadata: GGUFModelInfo | null;
+  hasVision: boolean;
+}
+
+export interface ImageModelStatus extends ModelStatus {
+  type: 'image';
+}
+
+export interface SttModelStatus extends ModelStatus {
+  type: 'stt';
+}
+
+export interface TtsModelStatus extends ModelStatus {
+  type: 'tts';
+}

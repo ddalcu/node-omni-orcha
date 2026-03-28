@@ -126,6 +126,51 @@ target_link_libraries(qwen3_tts PRIVATE ggml)
 target_compile_features(qwen3_tts PRIVATE cxx_std_17)
 set_target_properties(qwen3_tts PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+# --- MTMD (Multimodal / Vision engine) ---
+# Compile mtmd (CLIP vision encoder + multimodal helpers) against our shared ggml
+add_library(mtmd STATIC
+  engine/mtmd/clip.cpp
+  engine/mtmd/mtmd.cpp
+  engine/mtmd/mtmd-audio.cpp
+  engine/mtmd/mtmd-image.cpp
+  engine/mtmd/mtmd-helper.cpp
+  engine/mtmd/models/cogvlm.cpp
+  engine/mtmd/models/conformer.cpp
+  engine/mtmd/models/deepseekocr.cpp
+  engine/mtmd/models/glm4v.cpp
+  engine/mtmd/models/internvl.cpp
+  engine/mtmd/models/kimik25.cpp
+  engine/mtmd/models/kimivl.cpp
+  engine/mtmd/models/llama4.cpp
+  engine/mtmd/models/llava.cpp
+  engine/mtmd/models/minicpmv.cpp
+  engine/mtmd/models/mobilenetv5.cpp
+  engine/mtmd/models/nemotron-v2-vl.cpp
+  engine/mtmd/models/paddleocr.cpp
+  engine/mtmd/models/pixtral.cpp
+  engine/mtmd/models/qwen2vl.cpp
+  engine/mtmd/models/qwen3vl.cpp
+  engine/mtmd/models/siglip.cpp
+  engine/mtmd/models/whisper-enc.cpp
+  engine/mtmd/models/youtuvl.cpp
+)
+target_include_directories(mtmd PUBLIC
+  ${CMAKE_SOURCE_DIR}/engine/mtmd
+)
+target_include_directories(mtmd PRIVATE
+  ${CMAKE_SOURCE_DIR}/engine/ggml/include
+  ${CMAKE_SOURCE_DIR}/engine/include
+  ${CMAKE_SOURCE_DIR}/engine/src
+  ${CMAKE_SOURCE_DIR}/engine/vendor
+)
+target_link_libraries(mtmd PRIVATE ggml llama)
+target_compile_features(mtmd PRIVATE cxx_std_17)
+set_target_properties(mtmd PROPERTIES POSITION_INDEPENDENT_CODE ON)
+if(NOT MSVC)
+  # for stb_image.h and miniaudio.h
+  target_compile_options(mtmd PRIVATE -Wno-cast-qual)
+endif()
+
 # --- Stable Diffusion (Image/Video engine) ---
 # Compile sd.cpp sources directly against our shared ggml
 add_library(stable-diffusion STATIC
@@ -162,6 +207,7 @@ if(MSVC)
   )
   target_compile_definitions(qwen3_tts PRIVATE _CRT_SECURE_NO_WARNINGS _USE_MATH_DEFINES)
   target_compile_definitions(whisper PRIVATE _CRT_SECURE_NO_WARNINGS)
+  target_compile_definitions(mtmd PRIVATE _CRT_SECURE_NO_WARNINGS _USE_MATH_DEFINES)
 endif()
 
 # --- Unified omni.node addon ---
@@ -196,12 +242,14 @@ target_include_directories(omni PRIVATE
   ${CMAKE_SOURCE_DIR}/engine/tts
   ${CMAKE_SOURCE_DIR}/engine/diffusion
   ${CMAKE_SOURCE_DIR}/engine/vendor/stb
+  ${CMAKE_SOURCE_DIR}/engine/mtmd
 )
 
 target_link_libraries(omni PRIVATE
   ${CMAKE_JS_LIB}
   llama
   common
+  mtmd
   whisper
   qwen3_tts
   stable-diffusion
@@ -211,6 +259,13 @@ target_compile_definitions(omni PRIVATE
   NAPI_VERSION=9
   NODE_ADDON_API_DISABLE_DEPRECATED
 )
+
+# Tell the binding which GPU backend is compiled in
+if(GPU_BACKEND STREQUAL "metal")
+  target_compile_definitions(omni PRIVATE OMNI_GPU_METAL)
+elseif(GPU_BACKEND STREQUAL "cuda")
+  target_compile_definitions(omni PRIVATE OMNI_GPU_CUDA)
+endif()
 
 # On Windows, link delayimp.lib for /DELAYLOAD:NODE.EXE support.
 # The Visual Studio generator links this automatically but Ninja does not.

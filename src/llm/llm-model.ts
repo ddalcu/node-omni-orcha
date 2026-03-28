@@ -3,6 +3,7 @@ import { readGGUFMetadata, calculateOptimalContextSize } from '../utils/gguf-rea
 import { detectGpu } from '../utils/gpu.ts';
 import type {
   LlmModel,
+  LlmModelStatus,
   LlmLoadOptions,
   ChatMessage,
   CompletionOptions,
@@ -19,23 +20,27 @@ export function createLlmModel(modelPath: string): LlmModel {
   let nativeCtx: any = null;
   let loaded = false;
   let loading = false;
+  let isBusy = false;
   let metadata: GGUFModelInfo | null = null;
 
   // Mutex to serialize access — llama.cpp contexts are not thread-safe.
   // Concurrent operations on the same context corrupt KV cache state and cause segfaults.
-  let busy: Promise<void> = Promise.resolve();
+  let busyPromise: Promise<void> = Promise.resolve();
   function serialize<T>(fn: () => Promise<T>): Promise<T> {
-    const prev = busy;
+    const prev = busyPromise;
     let resolve: () => void;
-    busy = new Promise<void>(r => { resolve = r; });
-    return prev.then(fn).finally(() => resolve!());
+    busyPromise = new Promise<void>(r => { resolve = r; });
+    return prev.then(() => { isBusy = true; return fn(); }).finally(() => { isBusy = false; resolve!(); });
   }
 
   const model: LlmModel = {
     type: 'llm',
     get modelPath() { return modelPath; },
     get loaded() { return loaded; },
+    get loading() { return loading; },
+    get busy() { return isBusy; },
     get metadata() { return metadata; },
+    get hasVision() { return loaded && nativeCtx?.hasVision?.() === true; },
 
     async load(options?: LlmLoadOptions) {
       if (loaded || loading) return;
@@ -64,6 +69,9 @@ export function createLlmModel(modelPath: string): LlmModel {
           cacheTypeK: options?.cacheTypeK ?? (gpu.backend === 'metal' ? 'q8_0' : 'f16'),
           cacheTypeV: options?.cacheTypeV ?? (gpu.backend === 'metal' ? 'q8_0' : 'f16'),
           chatTemplate: options?.chatTemplate ?? '',
+          ...(options?.mmprojPath ? { mmprojPath: options.mmprojPath } : {}),
+          ...(options?.imageMinTokens != null ? { imageMinTokens: options.imageMinTokens } : {}),
+          ...(options?.imageMaxTokens != null ? { imageMaxTokens: options.imageMaxTokens } : {}),
         });
 
         // When gpuLayers is -1 (all), retry with fewer layers on CUDA OOM
@@ -161,10 +169,11 @@ export function createLlmModel(modelPath: string): LlmModel {
       assertLoaded();
 
       // Acquire the mutex before starting the stream — hold it until stream completes.
-      const prev = busy;
+      const prev = busyPromise;
       let releaseMutex: () => void;
-      busy = new Promise<void>(r => { releaseMutex = r; });
+      busyPromise = new Promise<void>(r => { releaseMutex = r; });
       await prev;
+      isBusy = true;
 
       const nativeOpts: Record<string, unknown> = {
         temperature: options?.temperature ?? 0.7,
@@ -226,6 +235,7 @@ export function createLlmModel(modelPath: string): LlmModel {
         }
       } finally {
         await streamPromise;
+        isBusy = false;
         releaseMutex!();
       }
     },
@@ -256,6 +266,18 @@ export function createLlmModel(modelPath: string): LlmModel {
         metadata = null;
       });
     },
+
+    getStatus(): LlmModelStatus {
+      return {
+        type: 'llm',
+        modelPath,
+        loaded,
+        loading,
+        busy: isBusy,
+        metadata,
+        hasVision: loaded && nativeCtx?.hasVision?.() === true,
+      };
+    },
   };
 
   function assertLoaded(): void {
@@ -277,11 +299,12 @@ function isOomError(err: unknown): boolean {
 
 /**
  * Format ChatMessage[] into the structure expected by the C++ binding.
+ * Content can be a string or array of content parts for multimodal messages.
  */
 function formatMessages(messages: ChatMessage[]): Array<Record<string, unknown>> {
   return messages.map(m => ({
     role: m.role,
-    content: m.content,
+    content: m.content, // string or ContentPart[] — C++ ParseMultimodalMessages handles both
     ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}),
     ...(m.name ? { name: m.name } : {}),
     ...(m.tool_calls?.length ? { tool_calls: m.tool_calls } : {}),

@@ -3,7 +3,7 @@ import { existsSync, statSync, writeFileSync } from 'node:fs';
 import { spawn, type ChildProcess } from 'node:child_process';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createModel } from './src/index.ts';
+import { createModel, getSystemStatus } from './src/index.ts';
 import type { LlmModel, SttModel, TtsModel, ImageModel, ChatMessage } from './src/types.ts';
 
 // --- Config ---
@@ -13,6 +13,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT_PATH = path.join(__dirname, 'scripts', 'download-test-models.sh');
 
 const LLM_PATH = process.env.LLM_MODEL ?? `${MODELS_DIR}/qwen3-5-4b/Qwen3.5-4B-IQ4_NL.gguf`;
+const LLM_MMPROJ_PATH = process.env.LLM_MMPROJ ?? `${MODELS_DIR}/qwen3-5-4b/mmproj-F16.gguf`;
 const STT_PATH = process.env.STT_MODEL ?? `${MODELS_DIR}/whisper-tiny/whisper-tiny.bin`;
 const TTS_PATH = process.env.TTS_MODEL ?? `${MODELS_DIR}/qwen3-tts`;
 
@@ -148,12 +149,19 @@ function loadLlm(): Promise<void> {
   if (loading.llm) return loading.llm;
   if (!LLM_PATH) return Promise.reject(new Error('LLM_MODEL not configured'));
 
-  console.log(`Loading LLM: ${LLM_PATH}`);
+  const hasVisionProj = existsSync(LLM_MMPROJ_PATH);
+  console.log(`Loading LLM: ${LLM_PATH}${hasVisionProj ? ` + mmproj: ${LLM_MMPROJ_PATH}` : ''}`);
   loading.llm = (async () => {
     const m = createModel(LLM_PATH, 'llm');
-    await m.load({ contextSize: 4096 });
+    await m.load({
+      contextSize: hasVisionProj ? 8192 : 4096,
+      ...(hasVisionProj ? {
+        mmprojPath: LLM_MMPROJ_PATH,
+        imageMaxTokens: 1024,
+      } : {}),
+    });
     models.llm = m;
-    console.log('LLM ready');
+    console.log(`LLM ready (vision: ${m.hasVision})`);
   })().catch(e => { loading.llm = null; throw e; });
   return loading.llm;
 }
@@ -268,7 +276,19 @@ async function handleChat(req: IncomingMessage, res: ServerResponse) {
   if (!models.llm) return errorResponse(res, 'LLM not loaded. Click the Chat tab to load it.', 503);
 
   const body = JSON.parse(await readBody(req));
-  const messages: ChatMessage[] = body.messages ?? [];
+  // Convert base64 image data to Buffers for the native binding
+  const messages: ChatMessage[] = (body.messages ?? []).map((m: any) => {
+    if (typeof m.content === 'string') return m;
+    return {
+      ...m,
+      content: m.content.map((part: any) => {
+        if (part.type === 'image' && typeof part.data === 'string') {
+          return { type: 'image', data: Buffer.from(part.data, 'base64') };
+        }
+        return part;
+      }),
+    };
+  });
 
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
@@ -430,17 +450,39 @@ async function handleVideo(req: IncomingMessage, res: ServerResponse) {
 }
 
 async function handleStatus(_req: IncomingMessage, res: ServerResponse) {
+  const system = getSystemStatus();
+
+  const modelStatuses = [];
+  if (models.llm) {
+    modelStatuses.push(models.llm.getStatus());
+  }
+  if (models.stt) {
+    modelStatuses.push(models.stt.getStatus());
+  }
+  if (models.tts) {
+    modelStatuses.push(models.tts.getStatus());
+  }
+  if (models.image) {
+    modelStatuses.push(models.image.getStatus());
+  }
+  if (models.video) {
+    modelStatuses.push({ ...models.video.getStatus(), variant: videoVariant });
+  }
+
   json(res, {
-    llm: models.llm?.loaded ?? false,
-    llmLoading: loading.llm !== null && !models.llm,
-    stt: models.stt?.loaded ?? false,
-    sttLoading: loading.stt !== null && !models.stt,
-    tts: models.tts ? { loaded: models.tts.loaded, engine: models.tts.engine } : false,
-    ttsLoading: loading.tts !== null && !models.tts,
-    image: models.image?.loaded ?? false,
-    imageLoading: loading.image !== null && !models.image,
-    video: models.video ? { loaded: models.video.loaded, variant: videoVariant } : false,
-    videoLoading: loading.video !== null && !models.video,
+    system,
+    models: {
+      llm: models.llm ? models.llm.getStatus() : { loaded: false, loading: loading.llm !== null },
+      stt: models.stt ? models.stt.getStatus() : { loaded: false, loading: loading.stt !== null },
+      tts: models.tts ? models.tts.getStatus() : { loaded: false, loading: loading.tts !== null },
+      image: models.image ? models.image.getStatus() : { loaded: false, loading: loading.image !== null },
+      video: models.video
+        ? { ...models.video.getStatus(), variant: videoVariant }
+        : { loaded: false, loading: loading.video !== null },
+    },
+    activeInference: modelStatuses.filter(m => m.busy).map(m => m.type),
+    loadedCount: modelStatuses.filter(m => m.loaded).length,
+    totalModels: 5,
   });
 }
 
@@ -518,6 +560,11 @@ async function router(req: IncomingMessage, res: ServerResponse) {
     res.end(HTML);
     return;
   }
+  if (method === 'GET' && url === '/status') {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(STATUS_HTML);
+    return;
+  }
   if (method === 'GET' && url === '/api/status') return handleStatus(req, res);
   if (method === 'GET' && url === '/api/models') return handleModelsApi(req, res);
   if (method === 'GET' && url.startsWith('/api/models/download')) return handleDownloadApi(req, res);
@@ -537,6 +584,7 @@ async function router(req: IncomingMessage, res: ServerResponse) {
 const server = createServer(router);
 server.listen(PORT, () => {
   console.log(`node-omni-orcha server on http://localhost:${PORT}`);
+  console.log(`Status dashboard: http://localhost:${PORT}/status`);
   console.log('Models load on-demand when you click a tab');
 });
 
@@ -552,6 +600,8 @@ const HTML = /* html */ `<!DOCTYPE html>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: system-ui, sans-serif; background: #0a0a0a; color: #e0e0e0; max-width: 720px; margin: 0 auto; padding: 16px; }
   h1 { font-size: 1.1rem; margin-bottom: 12px; color: #888; font-weight: 400; }
+  .status-link { font-size: 0.75rem; color: #4a9eff; text-decoration: none; margin-left: 8px; font-weight: 400; }
+  .status-link:hover { text-decoration: underline; }
 
   .tabs { display: flex; gap: 4px; margin-bottom: 12px; }
   .tab { padding: 6px 14px; border: 1px solid #333; background: transparent; color: #888; cursor: pointer; border-radius: 4px; font-size: 0.85rem; }
@@ -591,6 +641,13 @@ const HTML = /* html */ `<!DOCTYPE html>
   .status .loading-text { color: #4a9eff; }
 
   .chat-messages { background: #111; border: 1px solid #222; border-radius: 4px; padding: 12px; min-height: 200px; max-height: 400px; overflow-y: auto; margin-bottom: 8px; font-size: 0.9rem; line-height: 1.5; }
+  .chat-messages img { max-width: 200px; max-height: 200px; border-radius: 4px; margin-top: 4px; display: block; }
+
+  .chat-attachments { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+  .chat-attachment { position: relative; border: 1px solid #333; border-radius: 4px; overflow: hidden; }
+  .chat-attachment img { display: block; width: 80px; height: 80px; object-fit: cover; }
+  .chat-attachment-remove { position: absolute; top: 2px; right: 2px; width: 18px; height: 18px; background: rgba(0,0,0,0.7); border: none; color: #fff; border-radius: 50%; cursor: pointer; font-size: 12px; line-height: 18px; text-align: center; padding: 0; }
+  .chat-attachment-remove:hover { background: #c93027; }
   .msg { margin-bottom: 8px; }
   .msg-user { color: #7ab; }
   .msg-assistant { color: #ccc; }
@@ -627,7 +684,7 @@ const HTML = /* html */ `<!DOCTYPE html>
 </style>
 </head>
 <body>
-<h1>node-omni-orcha</h1>
+<h1>node-omni-orcha <a href="/status" class="status-link">status</a></h1>
 
 <div class="tabs">
   <button class="tab active" data-panel="models">Models</button>
@@ -653,8 +710,12 @@ const HTML = /* html */ `<!DOCTYPE html>
 <div class="panel" id="chat">
   <div class="chat-messages" id="chat-messages"></div>
   <div class="progress" id="chat-progress"><div class="progress-bar"></div></div>
+  <div class="chat-attachments" id="chat-attachments"></div>
   <div class="input-row">
-    <textarea id="chat-input" placeholder="Type a message..."></textarea>
+    <label class="btn hidden" id="chat-browse-label" title="Attach image (PNG, JPEG, GIF, WebP, BMP)">&#128206;
+      <input type="file" id="chat-file" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp" multiple class="hidden">
+    </label>
+    <textarea id="chat-input" placeholder="Type a message... (attach images with the clip button)"></textarea>
     <button class="btn" id="chat-send">Send</button>
   </div>
 </div>
@@ -912,30 +973,38 @@ async function checkStatus() {
   try {
     const r = await fetch('/api/status');
     const s = await r.json();
+    const m = s.models || {};
 
-    const ttsEngine = s.tts && s.tts.engine ? s.tts.engine : null;
-    const ttsOn = s.tts && (s.tts.loaded || s.tts === true);
-
-    if (s.llm) modelState.llm = 'on';
-    if (s.stt) modelState.stt = 'on';
-    if (ttsOn) modelState.tts = 'on';
-    if (s.image) modelState.image = 'on';
-    if (s.video && s.video.loaded) modelState.video = 'on';
-    if (s.llmLoading) modelState.llm = 'loading';
-    if (s.sttLoading) modelState.stt = 'loading';
-    if (s.ttsLoading) modelState.tts = 'loading';
-    if (s.imageLoading) modelState.image = 'loading';
-    if (s.videoLoading) modelState.video = 'loading';
+    if (m.llm && m.llm.loaded) modelState.llm = 'on';
+    if (m.stt && m.stt.loaded) modelState.stt = 'on';
+    if (m.tts && m.tts.loaded) modelState.tts = 'on';
+    if (m.image && m.image.loaded) modelState.image = 'on';
+    if (m.video && m.video.loaded) modelState.video = 'on';
+    if (m.llm && m.llm.loading) modelState.llm = 'loading';
+    if (m.stt && m.stt.loading) modelState.stt = 'loading';
+    if (m.tts && m.tts.loading) modelState.tts = 'loading';
+    if (m.image && m.image.loading) modelState.image = 'loading';
+    if (m.video && m.video.loading) modelState.video = 'loading';
 
     updateTabs();
 
-    if (ttsEngine === 'qwen3') {
-      document.getElementById('tts-options-kokoro').classList.add('hidden');
-      document.getElementById('tts-options-qwen3').classList.remove('hidden');
+    // Toggle image upload based on vision support
+    const hasVision = m.llm && m.llm.hasVision;
+    visionEnabled = !!hasVision;
+    const browseLabel = document.getElementById('chat-browse-label');
+    if (hasVision) {
+      browseLabel.classList.remove('hidden');
+      chatInput.placeholder = 'Type a message... (attach images with the clip button, paste, or drag & drop)';
     } else {
-      document.getElementById('tts-options-kokoro').classList.remove('hidden');
-      document.getElementById('tts-options-qwen3').classList.add('hidden');
+      browseLabel.classList.add('hidden');
+      chatInput.placeholder = m.llm && m.llm.loaded
+        ? 'Type a message... (load a vision model with mmproj for image support)'
+        : 'Type a message...';
     }
+
+    // Qwen3 is now the only TTS engine
+    document.getElementById('tts-options-kokoro').classList.add('hidden');
+    document.getElementById('tts-options-qwen3').classList.remove('hidden');
   } catch {}
   updateStatus();
 }
@@ -962,30 +1031,138 @@ const chatMessages = [];
 const chatEl = document.getElementById('chat-messages');
 const chatInput = document.getElementById('chat-input');
 const chatSend = document.getElementById('chat-send');
+const chatFile = document.getElementById('chat-file');
+const chatAttachments = document.getElementById('chat-attachments');
+let pendingImages = []; // { dataUrl: string, base64: string, mime: string }
+let visionEnabled = false;
 
 function renderChat() {
-  chatEl.innerHTML = chatMessages.map(m =>
-    '<div class="msg msg-' + m.role + '"><div class="msg-label">' + m.role + '</div>' + escHtml(m.content) + '</div>'
-  ).join('');
+  chatEl.innerHTML = chatMessages.map(function(m) {
+    let html = '<div class="msg msg-' + m.role + '"><div class="msg-label">' + m.role + '</div>';
+    if (typeof m.content === 'string') {
+      html += escHtml(m.content);
+    } else if (Array.isArray(m.content)) {
+      for (const part of m.content) {
+        if (part.type === 'text') html += escHtml(part.text);
+        if (part.type === 'image' && part.dataUrl) html += '<img src="' + part.dataUrl + '">';
+      }
+    }
+    html += '</div>';
+    return html;
+  }).join('');
   chatEl.scrollTop = chatEl.scrollHeight;
 }
 
+function renderPendingAttachments() {
+  chatAttachments.innerHTML = pendingImages.map(function(img, i) {
+    return '<div class="chat-attachment">'
+      + '<img src="' + img.dataUrl + '">'
+      + '<button class="chat-attachment-remove" data-idx="' + i + '">x</button>'
+      + '</div>';
+  }).join('');
+}
+
+chatAttachments.addEventListener('click', function(e) {
+  if (e.target.classList.contains('chat-attachment-remove')) {
+    pendingImages.splice(Number(e.target.dataset.idx), 1);
+    renderPendingAttachments();
+  }
+});
+
+chatFile.addEventListener('change', function() {
+  Array.from(chatFile.files).forEach(function(file) {
+    const reader = new FileReader();
+    reader.onload = function() {
+      const dataUrl = reader.result;
+      const base64 = dataUrl.split(',')[1];
+      const mime = file.type;
+      pendingImages.push({ dataUrl: dataUrl, base64: base64, mime: mime });
+      renderPendingAttachments();
+    };
+    reader.readAsDataURL(file);
+  });
+  chatFile.value = '';
+});
+
+// Allow drag-and-drop onto the chat input
+chatInput.addEventListener('dragover', function(e) { if (visionEnabled) e.preventDefault(); });
+chatInput.addEventListener('drop', function(e) {
+  if (!visionEnabled) return;
+  e.preventDefault();
+  var files = Array.from(e.dataTransfer.files).filter(function(f) { return f.type.startsWith('image/'); });
+  files.forEach(function(file) {
+    var reader = new FileReader();
+    reader.onload = function() {
+      var dataUrl = reader.result;
+      var base64 = dataUrl.split(',')[1];
+      pendingImages.push({ dataUrl: dataUrl, base64: base64, mime: file.type });
+      renderPendingAttachments();
+    };
+    reader.readAsDataURL(file);
+  });
+});
+
+// Allow paste images
+chatInput.addEventListener('paste', function(e) {
+  if (!visionEnabled) return;
+  var items = Array.from(e.clipboardData.items).filter(function(i) { return i.type.startsWith('image/'); });
+  items.forEach(function(item) {
+    var file = item.getAsFile();
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function() {
+      var dataUrl = reader.result;
+      var base64 = dataUrl.split(',')[1];
+      pendingImages.push({ dataUrl: dataUrl, base64: base64, mime: file.type });
+      renderPendingAttachments();
+    };
+    reader.readAsDataURL(file);
+  });
+});
+
 chatSend.addEventListener('click', async () => {
   const text = chatInput.value.trim();
-  if (!text) return;
+  if (!text && pendingImages.length === 0) return;
   chatInput.value = '';
 
-  chatMessages.push({ role: 'user', content: text });
+  // Build user message content
+  let userContent;
+  if (pendingImages.length > 0) {
+    userContent = [];
+    for (const img of pendingImages) {
+      userContent.push({ type: 'image', dataUrl: img.dataUrl, base64: img.base64, mime: img.mime });
+    }
+    if (text) userContent.push({ type: 'text', text: text });
+    pendingImages = [];
+    renderPendingAttachments();
+  } else {
+    userContent = text;
+  }
+
+  chatMessages.push({ role: 'user', content: userContent });
   chatMessages.push({ role: 'assistant', content: '' });
   renderChat();
   chatSend.disabled = true;
   progress('chat-progress', true);
 
+  // Build messages for API — convert image parts to { type: 'image', data: base64 }
+  const apiMessages = chatMessages.slice(0, -1).map(function(m) {
+    if (typeof m.content === 'string') return { role: m.role, content: m.content };
+    // Multimodal content — strip dataUrl (display-only), send base64 data
+    return {
+      role: m.role,
+      content: m.content.map(function(p) {
+        if (p.type === 'image') return { type: 'image', data: p.base64 };
+        return p;
+      }),
+    };
+  });
+
   try {
     const res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: chatMessages.slice(0, -1) }),
+      body: JSON.stringify({ messages: apiMessages }),
     });
     const reader = res.body.getReader();
     const dec = new TextDecoder();
@@ -1321,6 +1498,283 @@ function escHtml(s) {
   d.textContent = s;
   return d.innerHTML;
 }
+</script>
+</body>
+</html>`;
+
+// --- Status Dashboard HTML ---
+
+const STATUS_HTML = /* html */ `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>node-omni-orcha — Status</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, -apple-system, sans-serif; background: #0a0a0a; color: #e0e0e0; padding: 24px; }
+
+  .container { max-width: 960px; margin: 0 auto; }
+
+  .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; }
+  .header h1 { font-size: 1.2rem; font-weight: 500; color: #999; }
+  .header .uptime { font-size: 0.8rem; color: #555; }
+  .header a { color: #4a9eff; text-decoration: none; font-size: 0.85rem; }
+
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+  @media (max-width: 640px) { .grid { grid-template-columns: 1fr; } }
+
+  .card { background: #111; border: 1px solid #222; border-radius: 8px; padding: 16px; }
+  .card h2 { font-size: 0.85rem; color: #666; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 12px; font-weight: 500; }
+
+  .stat-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid #1a1a1a; }
+  .stat-row:last-child { border-bottom: none; }
+  .stat-label { font-size: 0.85rem; color: #888; }
+  .stat-value { font-size: 0.85rem; color: #e0e0e0; font-variant-numeric: tabular-nums; }
+
+  .bar-container { height: 6px; background: #1a1a1a; border-radius: 3px; margin-top: 4px; overflow: hidden; }
+  .bar { height: 100%; border-radius: 3px; transition: width 0.5s ease; }
+  .bar-ok { background: #2d8a4e; }
+  .bar-warn { background: #c9a227; }
+  .bar-danger { background: #c93027; }
+
+  .models-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; }
+
+  .model-card { background: #0d0d0d; border: 1px solid #222; border-radius: 8px; padding: 14px; position: relative; }
+  .model-card .model-type { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; color: #666; margin-bottom: 6px; }
+  .model-card .model-name { font-size: 0.85rem; color: #ccc; word-break: break-all; margin-bottom: 8px; min-height: 1.4em; }
+
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+  .badge-loaded { background: #1a3d2a; color: #4ade80; border: 1px solid #2d5a3d; }
+  .badge-loading { background: #1a2d4d; color: #4a9eff; border: 1px solid #2d4a6d; animation: pulse 1.5s infinite; }
+  .badge-busy { background: #4d3a1a; color: #f5a623; border: 1px solid #6d5a2d; animation: pulse 1s infinite; }
+  .badge-off { background: #1a1a1a; color: #555; border: 1px solid #2a2a2a; }
+
+  .badges { display: flex; gap: 6px; flex-wrap: wrap; }
+
+  .meta-row { font-size: 0.75rem; color: #555; margin-top: 6px; }
+
+  .inference-banner { background: #1a2d1a; border: 1px solid #2d5a3d; border-radius: 8px; padding: 12px 16px; margin-bottom: 24px; display: flex; align-items: center; gap: 10px; }
+  .inference-banner.idle { background: #111; border-color: #222; }
+  .inference-dot { width: 8px; height: 8px; border-radius: 50%; background: #4ade80; animation: pulse 1s infinite; flex-shrink: 0; }
+  .inference-dot.idle { background: #333; animation: none; }
+  .inference-text { font-size: 0.85rem; color: #ccc; }
+  .inference-text.idle { color: #555; }
+
+  .footer { text-align: center; margin-top: 32px; font-size: 0.75rem; color: #333; }
+
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+  .refresh-indicator { width: 6px; height: 6px; border-radius: 50%; background: #333; display: inline-block; margin-left: 8px; transition: background 0.2s; }
+  .refresh-indicator.active { background: #4a9eff; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>node-omni-orcha <span class="refresh-indicator" id="refresh-dot"></span></h1>
+    <div>
+      <span class="uptime" id="uptime"></span>
+      <a href="/">main ui</a>
+    </div>
+  </div>
+
+  <div id="inference-banner" class="inference-banner idle">
+    <div id="inference-dot" class="inference-dot idle"></div>
+    <div id="inference-text" class="inference-text idle">No active inference</div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>System</h2>
+      <div id="system-info"></div>
+    </div>
+    <div class="card">
+      <h2>CPU</h2>
+      <div id="cpu-info"></div>
+    </div>
+    <div class="card">
+      <h2>System Memory</h2>
+      <div id="mem-info"></div>
+    </div>
+    <div class="card">
+      <h2>Process Memory</h2>
+      <div id="proc-mem-info"></div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom: 24px;">
+    <h2>Models (<span id="model-count">0</span> / <span id="model-total">5</span> loaded)</h2>
+    <div class="models-grid" id="models-grid"></div>
+  </div>
+
+  <div class="card">
+    <h2>GPU</h2>
+    <div id="gpu-info"></div>
+  </div>
+
+  <div class="footer">
+    Polling every 2s &middot; <span id="last-update"></span>
+  </div>
+</div>
+
+<script>
+function fmtBytes(b) {
+  if (b == null) return '—';
+  if (b >= 1073741824) return (b / 1073741824).toFixed(1) + ' GB';
+  if (b >= 1048576) return (b / 1048576).toFixed(0) + ' MB';
+  if (b >= 1024) return (b / 1024).toFixed(0) + ' KB';
+  return b + ' B';
+}
+
+function fmtUptime(s) {
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const parts = [];
+  if (d > 0) parts.push(d + 'd');
+  if (h > 0) parts.push(h + 'h');
+  parts.push(m + 'm');
+  return parts.join(' ');
+}
+
+function barClass(pct) {
+  if (pct < 70) return 'bar-ok';
+  if (pct < 90) return 'bar-warn';
+  return 'bar-danger';
+}
+
+function statRow(label, value) {
+  return '<div class="stat-row"><span class="stat-label">' + label + '</span><span class="stat-value">' + value + '</span></div>';
+}
+
+function barRow(label, value, pct) {
+  return '<div class="stat-row"><span class="stat-label">' + label + '</span><span class="stat-value">' + value + '</span></div>'
+    + '<div class="bar-container"><div class="bar ' + barClass(pct) + '" style="width:' + Math.min(pct, 100) + '%"></div></div>';
+}
+
+function modelName(path) {
+  if (!path) return '—';
+  const parts = path.split('/');
+  return parts[parts.length - 1] || parts[parts.length - 2] || path;
+}
+
+function renderModels(models) {
+  const grid = document.getElementById('models-grid');
+  const types = ['llm', 'stt', 'tts', 'image', 'video'];
+  let html = '';
+
+  for (const t of types) {
+    const m = models[t];
+    if (!m) continue;
+
+    const badges = [];
+    if (m.busy) badges.push('<span class="badge badge-busy">inferring</span>');
+    else if (m.loaded) badges.push('<span class="badge badge-loaded">loaded</span>');
+    else if (m.loading) badges.push('<span class="badge badge-loading">loading</span>');
+    else badges.push('<span class="badge badge-off">off</span>');
+
+    if (m.hasVision) badges.push('<span class="badge badge-loaded">vision</span>');
+
+    let meta = '';
+    if (m.metadata) {
+      const md = m.metadata;
+      meta += '<div class="meta-row">' + md.architecture;
+      if (md.contextLength) meta += ' &middot; ctx ' + md.contextLength;
+      if (md.fileSizeBytes) meta += ' &middot; ' + fmtBytes(md.fileSizeBytes);
+      meta += '</div>';
+    }
+    if (m.variant) {
+      meta += '<div class="meta-row">variant: ' + m.variant + '</div>';
+    }
+
+    html += '<div class="model-card">'
+      + '<div class="model-type">' + t.toUpperCase() + '</div>'
+      + '<div class="model-name">' + (m.modelPath ? modelName(m.modelPath) : '—') + '</div>'
+      + '<div class="badges">' + badges.join('') + '</div>'
+      + meta
+      + '</div>';
+  }
+
+  grid.innerHTML = html;
+}
+
+async function poll() {
+  const dot = document.getElementById('refresh-dot');
+  dot.classList.add('active');
+  try {
+    const r = await fetch('/api/status');
+    const s = await r.json();
+    const sys = s.system;
+
+    // System info
+    document.getElementById('system-info').innerHTML =
+      statRow('Platform', sys.platform + ' ' + sys.arch)
+      + statRow('Hostname', sys.hostname)
+      + statRow('Node.js', sys.nodeVersion)
+      + statRow('OS Uptime', fmtUptime(sys.osUptimeSeconds));
+
+    // CPU
+    document.getElementById('cpu-info').innerHTML =
+      statRow('Model', sys.cpu.model)
+      + statRow('Cores / Threads', sys.cpu.cores + ' / ' + sys.cpu.threads)
+      + statRow('Speed', sys.cpu.speed + ' MHz');
+
+    // System memory
+    const memPct = sys.memory.usagePercent;
+    document.getElementById('mem-info').innerHTML =
+      barRow('Used', fmtBytes(sys.memory.usedBytes) + ' / ' + fmtBytes(sys.memory.totalBytes), memPct)
+      + statRow('Free', fmtBytes(sys.memory.freeBytes))
+      + statRow('Usage', memPct.toFixed(1) + '%');
+
+    // Process memory
+    const pm = sys.processMemory;
+    document.getElementById('proc-mem-info').innerHTML =
+      statRow('RSS', fmtBytes(pm.rssBytes))
+      + statRow('Heap Used', fmtBytes(pm.heapUsedBytes) + ' / ' + fmtBytes(pm.heapTotalBytes))
+      + statRow('External (native)', fmtBytes(pm.externalBytes));
+
+    // GPU
+    const g = sys.gpu;
+    let gpuHtml = statRow('Backend', g.backend.toUpperCase());
+    if (g.name) gpuHtml += statRow('Name', g.name);
+    if (g.vramBytes) gpuHtml += statRow('VRAM', fmtBytes(g.vramBytes));
+    document.getElementById('gpu-info').innerHTML = gpuHtml;
+
+    // Uptime
+    document.getElementById('uptime').textContent = 'process up ' + fmtUptime(sys.uptimeSeconds);
+
+    // Models
+    document.getElementById('model-count').textContent = s.loadedCount;
+    document.getElementById('model-total').textContent = s.totalModels;
+    renderModels(s.models);
+
+    // Inference banner
+    const active = s.activeInference || [];
+    const banner = document.getElementById('inference-banner');
+    const infDot = document.getElementById('inference-dot');
+    const infText = document.getElementById('inference-text');
+    if (active.length > 0) {
+      banner.classList.remove('idle');
+      infDot.classList.remove('idle');
+      infText.classList.remove('idle');
+      infText.textContent = 'Active: ' + active.map(function(t) { return t.toUpperCase(); }).join(', ');
+    } else {
+      banner.classList.add('idle');
+      infDot.classList.add('idle');
+      infText.classList.add('idle');
+      infText.textContent = 'No active inference';
+    }
+
+    document.getElementById('last-update').textContent = 'updated ' + new Date().toLocaleTimeString();
+  } catch (e) {
+    document.getElementById('last-update').textContent = 'fetch error: ' + e.message;
+  }
+  setTimeout(function() { dot.classList.remove('active'); }, 300);
+}
+
+poll();
+setInterval(poll, 2000);
 </script>
 </body>
 </html>`;

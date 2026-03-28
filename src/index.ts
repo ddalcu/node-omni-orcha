@@ -30,6 +30,9 @@ export type {
   LlmLoadOptions,
   ToolDefinition,
   ToolCall,
+  ContentPart,
+  TextContentPart,
+  ImageContentPart,
   ImageOptions,
   ImageLoadOptions,
   VideoOptions,
@@ -39,11 +42,22 @@ export type {
   TranscribeResult,
   TranscribeSegment,
   SpeakOptions,
+  // Status types
+  SystemStatus,
+  CpuInfo,
+  MemoryInfo,
+  ProcessMemoryInfo,
+  ModelStatus,
+  LlmModelStatus,
+  ImageModelStatus,
+  SttModelStatus,
+  TtsModelStatus,
 } from './types.ts';
 
 // Re-export utilities
 export { readGGUFMetadata } from './utils/gguf-reader.ts';
 export { detectGpu } from './utils/gpu.ts';
+export { getSystemStatus } from './utils/system.ts';
 
 /**
  * Load a model from a file path. Type is required.

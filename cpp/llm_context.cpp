@@ -5,11 +5,15 @@
 #include "chat.h"
 #include "common.h"
 #include "sampling.h"
+#include "mtmd.h"
+#include "mtmd-helper.h"
 #include <string>
 #include <vector>
 #include <cstring>
 #include <functional>
 #include <set>
+#include <fstream>
+#include <thread>
 
 // Static constructor reference
 Napi::FunctionReference LlmContext::constructor_;
@@ -61,7 +65,9 @@ static GenerationResult run_generation(
     const std::vector<std::string>& stop_sequences,
     int thinking_budget,
     std::atomic<bool>& abort_flag,
-    token_callback_t on_token)
+    token_callback_t on_token,
+    mtmd_context* mtmd_ctx = nullptr,
+    const std::vector<ImageInput>* images = nullptr)
 {
   GenerationResult result;
   const llama_vocab* vocab = llama_model_get_vocab(model);
@@ -100,59 +106,140 @@ static GenerationResult run_generation(
     all_stops.push_back(s);
   }
 
-  // Tokenize
-  int n_ctx = llama_n_ctx(ctx);
-  std::vector<llama_token> tokens(n_ctx);
-  int n_tokens = llama_tokenize(vocab, prompt.c_str(), prompt.length(),
-                                tokens.data(), tokens.size(), true, true);
-  if (n_tokens < 0) {
-    tokens.resize(-n_tokens);
-    n_tokens = llama_tokenize(vocab, prompt.c_str(), prompt.length(),
-                              tokens.data(), tokens.size(), true, true);
-  }
-  if (n_tokens < 0) {
-    result.error = "Tokenization failed";
-    return result;
-  }
-  tokens.resize(n_tokens);
-  result.input_tokens = n_tokens;
-
-  // Validate prompt fits in context window (need at least 1 token for generation)
-  if (n_tokens >= n_ctx) {
-    result.error = "Prompt too long: " + std::to_string(n_tokens)
-                 + " tokens exceeds context size of " + std::to_string(n_ctx)
-                 + ". Increase contextSize or reduce the conversation/tool definitions.";
-    return result;
-  }
-
-  // Cap max_tokens so prompt + generation doesn't overflow the KV cache
-  int available = n_ctx - n_tokens;
-  if (max_tokens > available) {
-    max_tokens = available;
-  }
-
   // Clear KV cache
   llama_memory_t mem = llama_get_memory(ctx);
   if (mem) {
     llama_memory_clear(mem, true);
   }
 
-  // Process prompt in chunks of n_batch
+  int n_ctx = llama_n_ctx(ctx);
   const int n_batch = (int)llama_n_batch(ctx);
-  for (int i = 0; i < n_tokens; i += n_batch) {
-    int chunk = std::min(n_batch, n_tokens - i);
-    llama_batch batch = llama_batch_init(chunk, 0, 1);
-    for (int j = 0; j < chunk; j++) {
-      bool is_last = (i + j == n_tokens - 1);
-      batch_add(batch, tokens[i + j], i + j, {0}, is_last);
+  int n_tokens = 0;
+  int cur_pos = 0;
+
+  bool has_images = mtmd_ctx && images && !images->empty();
+
+  if (has_images) {
+    // ─── Multimodal path: tokenize with mtmd, eval mixed text+image chunks ───
+    // Convert ImageInput data to mtmd bitmaps
+    mtmd::bitmaps bitmaps;
+    for (size_t i = 0; i < images->size(); i++) {
+      const auto& img = (*images)[i];
+      mtmd_bitmap* bmp = nullptr;
+      if (img.is_raw_rgb) {
+        // Vision models require a minimum image size for patch extraction
+        if (img.width < 14 || img.height < 14) {
+          result.error = "Image at index " + std::to_string(i)
+                       + " is too small (" + std::to_string(img.width) + "x" + std::to_string(img.height)
+                       + "). Minimum size is 14x14 pixels.";
+          return result;
+        }
+        bmp = mtmd_bitmap_init(img.width, img.height, img.data.data());
+      } else {
+        bmp = mtmd_helper_bitmap_init_from_buf(mtmd_ctx, img.data.data(), img.data.size());
+      }
+      if (!bmp) {
+        result.error = "Failed to decode image at index " + std::to_string(i);
+        return result;
+      }
+      bitmaps.entries.push_back(mtmd::bitmap(bmp));
     }
 
-    if (llama_decode(ctx, batch) != 0) {
-      llama_batch_free(batch);
-      result.error = "Failed to process prompt";
+    // Tokenize text + images into chunks
+    mtmd::input_chunks chunks(mtmd_input_chunks_init());
+    mtmd_input_text input_text;
+    input_text.text = prompt.c_str();
+    input_text.add_special = true;
+    input_text.parse_special = true;
+
+    auto bitmaps_c = bitmaps.c_ptr();
+    int32_t tok_res = 0;
+    try {
+      tok_res = mtmd_tokenize(mtmd_ctx, chunks.ptr.get(), &input_text,
+                               bitmaps_c.data(), bitmaps_c.size());
+    } catch (const std::exception& e) {
+      result.error = std::string("Image tokenization failed: ") + e.what();
       return result;
     }
-    llama_batch_free(batch);
+    if (tok_res != 0) {
+      if (tok_res == 1) {
+        result.error = "Number of images (" + std::to_string(images->size())
+                     + ") does not match number of image markers in prompt";
+      } else {
+        result.error = "Image preprocessing failed (mtmd_tokenize error " + std::to_string(tok_res) + ")";
+      }
+      return result;
+    }
+
+    n_tokens = (int)mtmd_helper_get_n_tokens(chunks.ptr.get());
+    result.input_tokens = n_tokens;
+
+    if (n_tokens >= n_ctx) {
+      result.error = "Prompt too long: " + std::to_string(n_tokens)
+                   + " tokens (including image tokens) exceeds context size of " + std::to_string(n_ctx)
+                   + ". Increase contextSize or reduce the conversation.";
+      return result;
+    }
+
+    int available = n_ctx - n_tokens;
+    if (max_tokens > available) {
+      max_tokens = available;
+    }
+
+    // Evaluate all chunks (text and image) using the mtmd helper
+    llama_pos n_past = 0;
+    int32_t eval_res = mtmd_helper_eval_chunks(mtmd_ctx, ctx, chunks.ptr.get(),
+                                                n_past, 0, n_batch, true, &n_past);
+    if (eval_res != 0) {
+      result.error = "Failed to evaluate multimodal prompt (error " + std::to_string(eval_res) + ")";
+      return result;
+    }
+    cur_pos = (int)n_past;
+  } else {
+    // ─── Text-only path: standard tokenize + decode ───
+    std::vector<llama_token> tokens(n_ctx);
+    n_tokens = llama_tokenize(vocab, prompt.c_str(), prompt.length(),
+                              tokens.data(), tokens.size(), true, true);
+    if (n_tokens < 0) {
+      tokens.resize(-n_tokens);
+      n_tokens = llama_tokenize(vocab, prompt.c_str(), prompt.length(),
+                                tokens.data(), tokens.size(), true, true);
+    }
+    if (n_tokens < 0) {
+      result.error = "Tokenization failed";
+      return result;
+    }
+    tokens.resize(n_tokens);
+    result.input_tokens = n_tokens;
+
+    if (n_tokens >= n_ctx) {
+      result.error = "Prompt too long: " + std::to_string(n_tokens)
+                   + " tokens exceeds context size of " + std::to_string(n_ctx)
+                   + ". Increase contextSize or reduce the conversation/tool definitions.";
+      return result;
+    }
+
+    int available = n_ctx - n_tokens;
+    if (max_tokens > available) {
+      max_tokens = available;
+    }
+
+    for (int i = 0; i < n_tokens; i += n_batch) {
+      int chunk = std::min(n_batch, n_tokens - i);
+      llama_batch batch = llama_batch_init(chunk, 0, 1);
+      for (int j = 0; j < chunk; j++) {
+        bool is_last = (i + j == n_tokens - 1);
+        batch_add(batch, tokens[i + j], i + j, {0}, is_last);
+      }
+
+      if (llama_decode(ctx, batch) != 0) {
+        llama_batch_free(batch);
+        result.error = "Failed to process prompt";
+        return result;
+      }
+      llama_batch_free(batch);
+    }
+    cur_pos = n_tokens;
   }
 
   // Build common_params_sampling from chat_params
@@ -205,7 +292,6 @@ static GenerationResult run_generation(
 
   // Generate tokens
   std::string output;
-  int cur_pos = n_tokens;
 
   // Buffer for incomplete UTF-8 sequences across token boundaries.
   // Some tokens produce single bytes of multi-byte chars (e.g. emoji = 4 bytes across 4 tokens).
@@ -451,6 +537,38 @@ LlmContext::LlmContext(const Napi::CallbackInfo& info)
 
   std::string chatTemplate = getStringOption(opts, "chatTemplate", "");
   chat_templates_ = common_chat_templates_init(model_, chatTemplate);
+
+  // Initialize multimodal context if mmproj path provided
+  std::string mmprojPath = getStringOption(opts, "mmprojPath", "");
+  if (!mmprojPath.empty()) {
+    mtmd_context_params mtmd_params = mtmd_context_params_default();
+
+    // Check actual GPU backend availability — don't try GPU on CPU-only builds
+#if defined(OMNI_GPU_METAL) || defined(OMNI_GPU_CUDA)
+    bool has_gpu_backend = true;
+#else
+    bool has_gpu_backend = false;
+#endif
+    mtmd_params.use_gpu = has_gpu_backend && (gpuLayers != 0);
+    mtmd_params.flash_attn_type = flashAttn ? LLAMA_FLASH_ATTN_TYPE_ENABLED : LLAMA_FLASH_ATTN_TYPE_AUTO;
+
+    // Auto-detect thread count, allow override via options
+    int imageThreads = getInt32Option(opts, "imageThreads", -1);
+    mtmd_params.n_threads = (imageThreads > 0)
+      ? imageThreads
+      : std::max(1, (int)std::thread::hardware_concurrency() - 1);
+
+    int imageMinTokens = getInt32Option(opts, "imageMinTokens", -1);
+    int imageMaxTokens = getInt32Option(opts, "imageMaxTokens", -1);
+    if (imageMinTokens > 0) mtmd_params.image_min_tokens = imageMinTokens;
+    if (imageMaxTokens > 0) mtmd_params.image_max_tokens = imageMaxTokens;
+
+    mtmd_ctx_ = mtmd_init_from_file(mmprojPath.c_str(), model_, mtmd_params);
+    if (!mtmd_ctx_) {
+      Cleanup();
+      throw Napi::Error::New(env, "Failed to load multimodal projector: " + mmprojPath);
+    }
+  }
 }
 
 LlmContext::~LlmContext() {
@@ -468,6 +586,10 @@ void LlmContext::ReleaseInference() {
 
 void LlmContext::Cleanup() {
   chat_templates_.reset();
+  if (mtmd_ctx_) {
+    mtmd_free(mtmd_ctx_);
+    mtmd_ctx_ = nullptr;
+  }
   if (ctx_) {
     llama_free(ctx_);
     ctx_ = nullptr;
@@ -488,7 +610,26 @@ std::vector<common_chat_msg> LlmContext::ParseMessages(const Napi::Array& arr) {
     Napi::Object msg = arr.Get(i).As<Napi::Object>();
     common_chat_msg m;
     m.role = msg.Get("role").As<Napi::String>().Utf8Value();
-    m.content = msg.Get("content").As<Napi::String>().Utf8Value();
+
+    Napi::Value contentVal = msg.Get("content");
+    if (contentVal.IsString()) {
+      m.content = contentVal.As<Napi::String>().Utf8Value();
+    } else if (contentVal.IsArray()) {
+      // ContentPart array on a text-only model — flatten text parts, ignore images
+      Napi::Array parts = contentVal.As<Napi::Array>();
+      std::string assembled;
+      for (uint32_t j = 0; j < parts.Length(); j++) {
+        Napi::Object part = parts.Get(j).As<Napi::Object>();
+        std::string type = part.Get("type").As<Napi::String>().Utf8Value();
+        if (type == "text") {
+          assembled += part.Get("text").As<Napi::String>().Utf8Value();
+        }
+        // Silently skip image parts on text-only models
+      }
+      m.content = assembled;
+    } else {
+      throw Napi::TypeError::New(arr.Env(), "Message content must be a string or array");
+    }
 
     if (msg.Has("tool_call_id") && msg.Get("tool_call_id").IsString()) {
       m.tool_call_id = msg.Get("tool_call_id").As<Napi::String>().Utf8Value();
@@ -532,6 +673,128 @@ std::vector<common_chat_tool> LlmContext::ParseTools(const Napi::Array& arr) {
   return tools;
 }
 
+// ─── Multimodal Message Parsing ───
+
+std::string LlmContext::ParseMultimodalMessages(
+    const Napi::Array& arr,
+    std::vector<common_chat_msg>& messages,
+    std::vector<ImageInput>& images)
+{
+  // Get the media marker used by mtmd for image placeholder insertion
+  const char* marker = mtmd_default_marker();
+
+  messages.reserve(arr.Length());
+
+  for (uint32_t i = 0; i < arr.Length(); i++) {
+    Napi::Object msg = arr.Get(i).As<Napi::Object>();
+    common_chat_msg m;
+    m.role = msg.Get("role").As<Napi::String>().Utf8Value();
+
+    Napi::Value contentVal = msg.Get("content");
+
+    if (contentVal.IsString()) {
+      // Simple text content — no images
+      m.content = contentVal.As<Napi::String>().Utf8Value();
+    } else if (contentVal.IsArray()) {
+      // Multimodal content parts: [{type:'text', text:'...'}, {type:'image', data: Buffer}]
+      Napi::Array parts = contentVal.As<Napi::Array>();
+      std::string assembled;
+
+      for (uint32_t j = 0; j < parts.Length(); j++) {
+        Napi::Object part = parts.Get(j).As<Napi::Object>();
+        std::string type = part.Get("type").As<Napi::String>().Utf8Value();
+
+        if (type == "text") {
+          assembled += part.Get("text").As<Napi::String>().Utf8Value();
+        } else if (type == "image") {
+          // Insert the mtmd media marker where the image goes
+          assembled += marker;
+
+          ImageInput img;
+          if (part.Has("data") && part.Get("data").IsBuffer()) {
+            // Raw image file bytes (PNG/JPEG/BMP/GIF)
+            auto buf = part.Get("data").As<Napi::Buffer<unsigned char>>();
+            if (buf.Length() == 0) {
+              throw Napi::Error::New(arr.Env(), "Image data buffer is empty");
+            }
+            img.data.assign(buf.Data(), buf.Data() + buf.Length());
+            img.is_raw_rgb = false;
+          } else if (part.Has("path") && part.Get("path").IsString()) {
+            // Load from file path
+            std::string path = part.Get("path").As<Napi::String>().Utf8Value();
+            std::ifstream file(path, std::ios::binary | std::ios::ate);
+            if (!file.is_open()) {
+              throw Napi::Error::New(arr.Env(), "Failed to open image file: " + path);
+            }
+            std::streampos spos = file.tellg();
+            if (spos <= 0) {
+              throw Napi::Error::New(arr.Env(), "Image file is empty: " + path);
+            }
+            size_t file_size = static_cast<size_t>(spos);
+            file.seekg(0, std::ios::beg);
+            img.data.resize(file_size);
+            file.read(reinterpret_cast<char*>(img.data.data()), static_cast<std::streamsize>(file_size));
+            img.is_raw_rgb = false;
+          } else if (part.Has("rgbData") && part.Get("rgbData").IsBuffer()) {
+            // Raw RGB pixel data with explicit dimensions
+            auto buf = part.Get("rgbData").As<Napi::Buffer<unsigned char>>();
+            if (!part.Has("width") || !part.Has("height")) {
+              throw Napi::Error::New(arr.Env(), "rgbData requires 'width' and 'height'");
+            }
+            img.width = part.Get("width").As<Napi::Number>().Uint32Value();
+            img.height = part.Get("height").As<Napi::Number>().Uint32Value();
+            size_t expected = (size_t)img.width * img.height * 3;
+            if (buf.Length() != expected) {
+              throw Napi::Error::New(arr.Env(),
+                "rgbData size mismatch: expected " + std::to_string(expected)
+                + " bytes (" + std::to_string(img.width) + "x" + std::to_string(img.height)
+                + "x3) but got " + std::to_string(buf.Length()));
+            }
+            if (img.width == 0 || img.height == 0) {
+              throw Napi::Error::New(arr.Env(), "Image dimensions must be > 0");
+            }
+            img.data.assign(buf.Data(), buf.Data() + buf.Length());
+            img.is_raw_rgb = true;
+          } else {
+            throw Napi::Error::New(arr.Env(),
+              "Image content part must have 'data' (Buffer), 'path' (string), or 'rgbData' (Buffer with width/height)");
+          }
+          images.push_back(std::move(img));
+        }
+      }
+      m.content = assembled;
+    } else {
+      throw Napi::TypeError::New(arr.Env(),
+        "Message content must be a string or array of content parts");
+    }
+
+    // Parse tool_call_id, name, tool_calls (same as ParseMessages)
+    if (msg.Has("tool_call_id") && msg.Get("tool_call_id").IsString()) {
+      m.tool_call_id = msg.Get("tool_call_id").As<Napi::String>().Utf8Value();
+    }
+    if (msg.Has("name") && msg.Get("name").IsString()) {
+      m.tool_name = msg.Get("name").As<Napi::String>().Utf8Value();
+    }
+    if (msg.Has("tool_calls") && msg.Get("tool_calls").IsArray()) {
+      Napi::Array tcArr = msg.Get("tool_calls").As<Napi::Array>();
+      for (uint32_t j = 0; j < tcArr.Length(); j++) {
+        Napi::Object tc = tcArr.Get(j).As<Napi::Object>();
+        common_chat_tool_call tool_call;
+        tool_call.name = tc.Get("name").As<Napi::String>().Utf8Value();
+        tool_call.arguments = tc.Get("args").As<Napi::String>().Utf8Value();
+        if (tc.Has("id") && tc.Get("id").IsString()) {
+          tool_call.id = tc.Get("id").As<Napi::String>().Utf8Value();
+        }
+        m.tool_calls.push_back(std::move(tool_call));
+      }
+    }
+
+    messages.push_back(std::move(m));
+  }
+
+  return std::string(marker);
+}
+
 // ─── Helper: parse native options ───
 
 struct NativeOpts {
@@ -541,6 +804,7 @@ struct NativeOpts {
   std::vector<std::string> stopSequences;
   std::vector<common_chat_tool> tools;
   common_chat_tool_choice toolChoice = COMMON_CHAT_TOOL_CHOICE_AUTO;
+  std::vector<ImageInput> images;
 };
 
 static NativeOpts parseNativeOpts(LlmContext* self, const Napi::Object& opts) {
@@ -612,7 +876,8 @@ public:
     std::vector<common_chat_msg> messages,
     NativeOpts opts,
     std::atomic<bool>& abort_flag,
-    std::atomic<bool>& busy_flag
+    std::atomic<bool>& busy_flag,
+    mtmd_context* mtmd_ctx = nullptr
   ) : Napi::AsyncWorker(env),
       deferred_(Napi::Promise::Deferred::New(env)),
       model_(model), ctx_(ctx),
@@ -620,7 +885,8 @@ public:
       messages_(std::move(messages)),
       opts_(std::move(opts)),
       abort_flag_(abort_flag),
-      busy_flag_(busy_flag) {}
+      busy_flag_(busy_flag),
+      mtmd_ctx_(mtmd_ctx) {}
 
   Napi::Promise Promise() { return deferred_.Promise(); }
 
@@ -630,7 +896,8 @@ protected:
       model_, ctx_, chat_templates_,
       messages_, opts_.tools, opts_.toolChoice,
       opts_.temperature, opts_.maxTokens, opts_.stopSequences,
-      opts_.thinkingBudget, abort_flag_, nullptr);
+      opts_.thinkingBudget, abort_flag_, nullptr,
+      mtmd_ctx_, opts_.images.empty() ? nullptr : &opts_.images);
     if (!result_.error.empty()) {
       SetError(result_.error);
     }
@@ -655,6 +922,7 @@ private:
   NativeOpts opts_;
   std::atomic<bool>& abort_flag_;
   std::atomic<bool>& busy_flag_;
+  mtmd_context* mtmd_ctx_;
   GenerationResult result_;
 };
 
@@ -668,15 +936,25 @@ Napi::Value LlmContext::Complete(const Napi::CallbackInfo& info) {
       "Wait for the previous call to complete before starting a new one.");
   }
 
-  auto messages = ParseMessages(info[0].As<Napi::Array>());
   NativeOpts opts;
-  if (info.Length() >= 2 && info[1].IsObject()) {
-    opts = parseNativeOpts(this, info[1].As<Napi::Object>());
+  std::vector<common_chat_msg> messages;
+  try {
+    if (info.Length() >= 2 && info[1].IsObject()) {
+      opts = parseNativeOpts(this, info[1].As<Napi::Object>());
+    }
+    if (mtmd_ctx_) {
+      ParseMultimodalMessages(info[0].As<Napi::Array>(), messages, opts.images);
+    } else {
+      messages = ParseMessages(info[0].As<Napi::Array>());
+    }
+  } catch (...) {
+    ReleaseInference();
+    throw;
   }
 
   abort_flag_.store(false);
   auto* worker = new CompletionWorker(env, model_, ctx_, chat_templates_.get(),
-    std::move(messages), std::move(opts), abort_flag_, busy_);
+    std::move(messages), std::move(opts), abort_flag_, busy_, mtmd_ctx_);
   worker->Queue();
   return worker->Promise();
 }
@@ -693,7 +971,8 @@ public:
     NativeOpts opts,
     std::atomic<bool>& abort_flag,
     std::atomic<bool>& busy_flag,
-    Napi::Function callback
+    Napi::Function callback,
+    mtmd_context* mtmd_ctx = nullptr
   ) : Napi::AsyncWorker(env),
       deferred_(Napi::Promise::Deferred::New(env)),
       model_(model), ctx_(ctx),
@@ -701,7 +980,8 @@ public:
       messages_(std::move(messages)),
       opts_(std::move(opts)),
       abort_flag_(abort_flag),
-      busy_flag_(busy_flag)
+      busy_flag_(busy_flag),
+      mtmd_ctx_(mtmd_ctx)
   {
     tsfn_ = Napi::ThreadSafeFunction::New(env, callback, "llm-stream", 0, 1);
   }
@@ -733,7 +1013,8 @@ protected:
       model_, ctx_, chat_templates_,
       messages_, opts_.tools, opts_.toolChoice,
       opts_.temperature, opts_.maxTokens, opts_.stopSequences,
-      opts_.thinkingBudget, abort_flag_, on_token);
+      opts_.thinkingBudget, abort_flag_, on_token,
+      mtmd_ctx_, opts_.images.empty() ? nullptr : &opts_.images);
 
     if (!result_.error.empty()) {
       SetError(result_.error);
@@ -773,6 +1054,7 @@ private:
   NativeOpts opts_;
   std::atomic<bool>& abort_flag_;
   std::atomic<bool>& busy_flag_;
+  mtmd_context* mtmd_ctx_;
   GenerationResult result_;
 };
 
@@ -787,17 +1069,27 @@ Napi::Value LlmContext::Stream(const Napi::CallbackInfo& info) {
       "Wait for the previous call to complete before starting a new one.");
   }
 
-  auto messages = ParseMessages(info[0].As<Napi::Array>());
   Napi::Function callback = info[2].As<Napi::Function>();
 
   NativeOpts opts;
-  if (info[1].IsObject()) {
-    opts = parseNativeOpts(this, info[1].As<Napi::Object>());
+  std::vector<common_chat_msg> messages;
+  try {
+    if (info[1].IsObject()) {
+      opts = parseNativeOpts(this, info[1].As<Napi::Object>());
+    }
+    if (mtmd_ctx_) {
+      ParseMultimodalMessages(info[0].As<Napi::Array>(), messages, opts.images);
+    } else {
+      messages = ParseMessages(info[0].As<Napi::Array>());
+    }
+  } catch (...) {
+    ReleaseInference();
+    throw;
   }
 
   abort_flag_.store(false);
   auto* worker = new StreamWorker(env, model_, ctx_, chat_templates_.get(),
-    std::move(messages), std::move(opts), abort_flag_, busy_, callback);
+    std::move(messages), std::move(opts), abort_flag_, busy_, callback, mtmd_ctx_);
   worker->Queue();
   return worker->Promise();
 }
@@ -1099,6 +1391,13 @@ Napi::Value LlmContext::Abort(const Napi::CallbackInfo& info) {
   return info.Env().Undefined();
 }
 
+// ─── HasVision ───
+
+Napi::Value LlmContext::HasVision(const Napi::CallbackInfo& info) {
+  bool vision = mtmd_ctx_ != nullptr && mtmd_support_vision(mtmd_ctx_);
+  return Napi::Boolean::New(info.Env(), vision);
+}
+
 // ─── Registration ───
 
 static Napi::Value CreateLlmContext(const Napi::CallbackInfo& info) {
@@ -1121,6 +1420,7 @@ void LlmContext::Register(Napi::Env env, Napi::Object& exports) {
     InstanceMethod("embedBatch", &LlmContext::EmbedBatch),
     InstanceMethod("unload", &LlmContext::Unload),
     InstanceMethod("abort", &LlmContext::Abort),
+    InstanceMethod("hasVision", &LlmContext::HasVision),
   });
 
   constructor_ = Napi::Persistent(func);

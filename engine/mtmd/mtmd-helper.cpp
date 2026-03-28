@@ -17,16 +17,9 @@
 
 //#define MTMD_AUDIO_DEBUG
 
-#define MINIAUDIO_IMPLEMENTATION
-#ifndef MTMD_AUDIO_DEBUG
-#   define MA_NO_ENCODING
-#endif
-#define MA_NO_DEVICE_IO
-#define MA_NO_RESOURCE_MANAGER
-#define MA_NO_NODE_GRAPH
-#define MA_NO_ENGINE
-#define MA_NO_GENERATION
-#define MA_API static
+// miniaudio implementation is provided by miniaudio_impl.c (linked via qwen3_tts).
+// Only include the header here for declarations — do NOT define MINIAUDIO_IMPLEMENTATION
+// to avoid duplicate symbol errors (ma_atomic_global_lock) on Linux LTO.
 #include "miniaudio/miniaudio.h"
 
 #define STB_IMAGE_STATIC

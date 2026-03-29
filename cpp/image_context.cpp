@@ -211,7 +211,8 @@ public:
     float cfg_scale, int64_t seed,
     sample_method_t sample_method,
     scheduler_t scheduler, int clip_skip,
-    bool scheduler_specified
+    bool scheduler_specified,
+    std::atomic<bool>& busy_flag
   ) : Napi::AsyncWorker(env),
       deferred_(Napi::Promise::Deferred::New(env)),
       ctx_(ctx),
@@ -221,7 +222,8 @@ public:
       steps_(steps), cfg_scale_(cfg_scale),
       seed_(seed), sample_method_(sample_method),
       scheduler_(scheduler), clip_skip_(clip_skip),
-      scheduler_specified_(scheduler_specified) {}
+      scheduler_specified_(scheduler_specified),
+      busy_flag_(busy_flag) {}
 
   Napi::Promise Promise() { return deferred_.Promise(); }
 
@@ -276,6 +278,7 @@ protected:
   }
 
   void OnOK() override {
+    busy_flag_.store(false);
     auto env = Env();
     Napi::HandleScope scope(env);
     auto buffer = Napi::Buffer<uint8_t>::Copy(
@@ -285,6 +288,7 @@ protected:
   }
 
   void OnError(const Napi::Error& e) override {
+    busy_flag_.store(false);
     deferred_.Reject(e.Value());
   }
 
@@ -300,6 +304,7 @@ private:
   scheduler_t scheduler_;
   int clip_skip_;
   bool scheduler_specified_;
+  std::atomic<bool>& busy_flag_;
   GenerateResult result_;
 };
 
@@ -307,8 +312,14 @@ Napi::Value ImageContext::Generate(const Napi::CallbackInfo& info) {
   auto env = info.Env();
 
   if (!ctx_) throw Napi::Error::New(env, "Image context not loaded");
-  if (info.Length() < 1 || !info[0].IsString())
+  if (!AcquireBusy()) {
+    throw Napi::Error::New(env, "Context is busy — another inference operation is in progress. "
+      "Wait for the previous call to complete before starting a new one.");
+  }
+  if (info.Length() < 1 || !info[0].IsString()) {
+    ReleaseBusy();
     throw Napi::TypeError::New(env, "Prompt string required");
+  }
 
   std::string prompt = info[0].As<Napi::String>().Utf8Value();
 
@@ -341,15 +352,19 @@ Napi::Value ImageContext::Generate(const Napi::CallbackInfo& info) {
     }
   }
 
-  if (width < 1 || height < 1)
+  if (width < 1 || height < 1) {
+    ReleaseBusy();
     throw Napi::Error::New(env, "Width and height must be at least 1");
-  if (steps < 1)
+  }
+  if (steps < 1) {
+    ReleaseBusy();
     throw Napi::Error::New(env, "Steps must be at least 1");
+  }
 
   auto* worker = new GenerateWorker(
     env, ctx_, std::move(prompt), std::move(negativePrompt),
     width, height, steps, cfgScale, seed,
-    sampleMethod, scheduler, clipSkip, schedulerSpecified
+    sampleMethod, scheduler, clipSkip, schedulerSpecified, busy_
   );
   worker->Queue();
   return worker->Promise();
@@ -374,7 +389,8 @@ public:
     int clip_skip, bool scheduler_specified,
     int high_noise_steps, float high_noise_cfg_scale,
     sample_method_t high_noise_sample_method, bool high_noise_specified,
-    std::vector<uint8_t> init_image_data, std::vector<uint8_t> end_image_data
+    std::vector<uint8_t> init_image_data, std::vector<uint8_t> end_image_data,
+    std::atomic<bool>& busy_flag
   ) : Napi::AsyncWorker(env),
       deferred_(Napi::Promise::Deferred::New(env)),
       ctx_(ctx), prompt_(std::move(prompt)),
@@ -389,7 +405,8 @@ public:
       high_noise_sample_method_(high_noise_sample_method),
       high_noise_specified_(high_noise_specified),
       init_image_data_(std::move(init_image_data)),
-      end_image_data_(std::move(end_image_data)) {}
+      end_image_data_(std::move(end_image_data)),
+      busy_flag_(busy_flag) {}
 
   Napi::Promise Promise() { return deferred_.Promise(); }
 
@@ -489,6 +506,7 @@ protected:
   }
 
   void OnOK() override {
+    busy_flag_.store(false);
     auto env = Env();
     Napi::HandleScope scope(env);
     Napi::Array arr = Napi::Array::New(env, result_.frames.size());
@@ -502,6 +520,7 @@ protected:
   }
 
   void OnError(const Napi::Error& e) override {
+    busy_flag_.store(false);
     deferred_.Reject(e.Value());
   }
 
@@ -521,6 +540,7 @@ private:
   float high_noise_cfg_scale_;
   sample_method_t high_noise_sample_method_;
   bool high_noise_specified_;
+  std::atomic<bool>& busy_flag_;
   std::vector<uint8_t> init_image_data_;
   std::vector<uint8_t> end_image_data_;
   VideoResult result_;
@@ -530,10 +550,18 @@ Napi::Value ImageContext::GenerateVideo(const Napi::CallbackInfo& info) {
   auto env = info.Env();
 
   if (!ctx_) throw Napi::Error::New(env, "Image context not loaded");
-  if (!is_video_model_)
+  if (!AcquireBusy()) {
+    throw Napi::Error::New(env, "Context is busy — another inference operation is in progress. "
+      "Wait for the previous call to complete before starting a new one.");
+  }
+  if (!is_video_model_) {
+    ReleaseBusy();
     throw Napi::Error::New(env, "This model does not support video generation. Use a WAN/video model with t5xxlPath.");
-  if (info.Length() < 1 || !info[0].IsString())
+  }
+  if (info.Length() < 1 || !info[0].IsString()) {
+    ReleaseBusy();
     throw Napi::TypeError::New(env, "Prompt string required");
+  }
 
   std::string prompt = info[0].As<Napi::String>().Utf8Value();
 
@@ -586,12 +614,18 @@ Napi::Value ImageContext::GenerateVideo(const Napi::CallbackInfo& info) {
     }
   }
 
-  if (width < 1 || height < 1)
+  if (width < 1 || height < 1) {
+    ReleaseBusy();
     throw Napi::Error::New(env, "Width and height must be at least 1");
-  if (videoFrames < 1)
+  }
+  if (videoFrames < 1) {
+    ReleaseBusy();
     throw Napi::Error::New(env, "videoFrames must be at least 1");
-  if (steps < 1)
+  }
+  if (steps < 1) {
+    ReleaseBusy();
     throw Napi::Error::New(env, "Steps must be at least 1");
+  }
 
   // Extract init/end image buffers for I2V / TI2V / FLF2V
   std::vector<uint8_t> initImageData, endImageData;
@@ -612,7 +646,7 @@ Napi::Value ImageContext::GenerateVideo(const Napi::CallbackInfo& info) {
     width, height, videoFrames, cfgScale, flowShift, steps, seed,
     sampleMethod, scheduler, clipSkip, schedulerSpecified,
     highNoiseSteps, highNoiseCfgScale, highNoiseSampleMethod, highNoiseSpecified,
-    std::move(initImageData), std::move(endImageData)
+    std::move(initImageData), std::move(endImageData), busy_
   );
   worker->Queue();
   return worker->Promise();

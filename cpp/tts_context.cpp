@@ -89,13 +89,15 @@ public:
     Qwen3Tts* tts,
     std::string text,
     std::string referenceAudioPath,
-    Qwen3TtsParams params
+    Qwen3TtsParams params,
+    std::atomic<bool>& busy_flag
   ) : Napi::AsyncWorker(env),
       deferred_(Napi::Promise::Deferred::New(env)),
       tts_(tts),
       text_(std::move(text)),
       referenceAudioPath_(std::move(referenceAudioPath)),
-      params_(params) {}
+      params_(params),
+      busy_flag_(busy_flag) {}
 
   Napi::Promise Promise() { return deferred_.Promise(); }
 
@@ -123,6 +125,7 @@ protected:
   }
 
   void OnOK() override {
+    busy_flag_.store(false);
     auto env = Env();
     Napi::HandleScope scope(env);
     auto buffer = Napi::Buffer<uint8_t>::Copy(env, wav_data_.data(), wav_data_.size());
@@ -130,6 +133,7 @@ protected:
   }
 
   void OnError(const Napi::Error& e) override {
+    busy_flag_.store(false);
     deferred_.Reject(e.Value());
   }
 
@@ -139,17 +143,25 @@ private:
   std::string text_;
   std::string referenceAudioPath_;
   Qwen3TtsParams params_;
+  std::atomic<bool>& busy_flag_;
   std::vector<uint8_t> wav_data_;
 };
 
 Napi::Value TtsContext::Speak(const Napi::CallbackInfo& info) {
   auto env = info.Env();
   if (!tts_) throw Napi::Error::New(env, "TTS not loaded");
-  if (info.Length() < 1 || !info[0].IsString())
+  if (!AcquireBusy()) {
+    throw Napi::Error::New(env, "Context is busy — another inference operation is in progress. "
+      "Wait for the previous call to complete before starting a new one.");
+  }
+  if (info.Length() < 1 || !info[0].IsString()) {
+    ReleaseBusy();
     throw Napi::TypeError::New(env, "Text string required");
+  }
 
   std::string text = info[0].As<Napi::String>().Utf8Value();
   if (text.empty()) {
+    ReleaseBusy();
     throw Napi::Error::New(env, "Text must not be empty");
   }
   std::string referenceAudioPath = "";
@@ -169,7 +181,7 @@ Napi::Value TtsContext::Speak(const Napi::CallbackInfo& info) {
     }
   }
 
-  auto* worker = new SpeakWorker(env, tts_, std::move(text), std::move(referenceAudioPath), params);
+  auto* worker = new SpeakWorker(env, tts_, std::move(text), std::move(referenceAudioPath), params, busy_);
   worker->Queue();
   return worker->Promise();
 }

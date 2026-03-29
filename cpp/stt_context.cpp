@@ -81,12 +81,14 @@ public:
     Napi::Env env,
     whisper_context* ctx,
     std::vector<float> pcmf32,
-    std::string language
+    std::string language,
+    std::atomic<bool>& busy_flag
   ) : Napi::AsyncWorker(env),
       deferred_(Napi::Promise::Deferred::New(env)),
       ctx_(ctx),
       pcmf32_(std::move(pcmf32)),
-      language_(std::move(language)) {}
+      language_(std::move(language)),
+      busy_flag_(busy_flag) {}
 
   Napi::Promise Promise() { return deferred_.Promise(); }
 
@@ -156,10 +158,12 @@ protected:
     }
     result.Set("segments", segments);
 
+    busy_flag_.store(false);
     deferred_.Resolve(result);
   }
 
   void OnError(const Napi::Error& e) override {
+    busy_flag_.store(false);
     deferred_.Reject(e.Value());
   }
 
@@ -168,6 +172,7 @@ private:
   whisper_context* ctx_;
   std::vector<float> pcmf32_;
   std::string language_;
+  std::atomic<bool>& busy_flag_;
   TranscribeResultData result_;
 };
 
@@ -177,12 +182,18 @@ Napi::Value SttContext::Transcribe(const Napi::CallbackInfo& info) {
   if (!ctx_) {
     throw Napi::Error::New(env, "Whisper context not loaded");
   }
+  if (!AcquireBusy()) {
+    throw Napi::Error::New(env, "Context is busy — another inference operation is in progress. "
+      "Wait for the previous call to complete before starting a new one.");
+  }
   if (info.Length() < 1 || !info[0].IsBuffer()) {
+    ReleaseBusy();
     throw Napi::TypeError::New(env, "Audio buffer (16-bit PCM, 16kHz mono) required");
   }
 
   auto buf = info[0].As<Napi::Buffer<uint8_t>>();
   if (buf.Length() < 2) {
+    ReleaseBusy();
     throw Napi::Error::New(env, "Audio buffer too small — need at least one 16-bit sample (2 bytes)");
   }
   auto pcmf32 = pcm16_to_f32(buf.Data(), buf.Length());
@@ -193,7 +204,7 @@ Napi::Value SttContext::Transcribe(const Napi::CallbackInfo& info) {
     language = getStringOption(opts, "language", "auto");
   }
 
-  auto* worker = new TranscribeWorker(env, ctx_, std::move(pcmf32), std::move(language));
+  auto* worker = new TranscribeWorker(env, ctx_, std::move(pcmf32), std::move(language), busy_);
   worker->Queue();
   return worker->Promise();
 }
@@ -205,11 +216,13 @@ public:
   DetectLanguageWorker(
     Napi::Env env,
     whisper_context* ctx,
-    std::vector<float> pcmf32
+    std::vector<float> pcmf32,
+    std::atomic<bool>& busy_flag
   ) : Napi::AsyncWorker(env),
       deferred_(Napi::Promise::Deferred::New(env)),
       ctx_(ctx),
-      pcmf32_(std::move(pcmf32)) {}
+      pcmf32_(std::move(pcmf32)),
+      busy_flag_(busy_flag) {}
 
   Napi::Promise Promise() { return deferred_.Promise(); }
 
@@ -244,10 +257,12 @@ protected:
   }
 
   void OnOK() override {
+    busy_flag_.store(false);
     deferred_.Resolve(Napi::String::New(Env(), detected_lang_));
   }
 
   void OnError(const Napi::Error& e) override {
+    busy_flag_.store(false);
     deferred_.Reject(e.Value());
   }
 
@@ -255,6 +270,7 @@ private:
   Napi::Promise::Deferred deferred_;
   whisper_context* ctx_;
   std::vector<float> pcmf32_;
+  std::atomic<bool>& busy_flag_;
   std::string detected_lang_;
 };
 
@@ -264,17 +280,23 @@ Napi::Value SttContext::DetectLanguage(const Napi::CallbackInfo& info) {
   if (!ctx_) {
     throw Napi::Error::New(env, "Whisper context not loaded");
   }
+  if (!AcquireBusy()) {
+    throw Napi::Error::New(env, "Context is busy — another inference operation is in progress. "
+      "Wait for the previous call to complete before starting a new one.");
+  }
   if (info.Length() < 1 || !info[0].IsBuffer()) {
+    ReleaseBusy();
     throw Napi::TypeError::New(env, "Audio buffer required");
   }
 
   auto buf = info[0].As<Napi::Buffer<uint8_t>>();
   if (buf.Length() < 2) {
+    ReleaseBusy();
     throw Napi::Error::New(env, "Audio buffer too small — need at least one 16-bit sample (2 bytes)");
   }
   auto pcmf32 = pcm16_to_f32(buf.Data(), buf.Length());
 
-  auto* worker = new DetectLanguageWorker(env, ctx_, std::move(pcmf32));
+  auto* worker = new DetectLanguageWorker(env, ctx_, std::move(pcmf32), busy_);
   worker->Queue();
   return worker->Promise();
 }

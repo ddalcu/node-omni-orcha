@@ -23,6 +23,12 @@ private:
 
   friend class InitWorker;
 
+  bool AcquireBusy() {
+    bool expected = false;
+    return busy_.compare_exchange_strong(expected, true);
+  }
+  void ReleaseBusy() { busy_.store(false); }
+
   sd_ctx_t* ctx_ = nullptr;
   std::string model_path_;
   std::string clip_l_path_;
@@ -36,4 +42,5 @@ private:
   bool flash_attn_ = true;
   bool vae_decode_only_ = true;
   bool is_video_model_ = false;  // true for WAN/video models (t5xxl without llm)
+  std::atomic<bool> busy_{false};
 };

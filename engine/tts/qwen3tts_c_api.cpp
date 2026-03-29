@@ -5,6 +5,7 @@
  * Objective-C objects when called from background threads. */
 
 #include "qwen3_tts.h"
+#include "gguf_loader.h"
 
 #ifdef __APPLE__
 #include <objc/objc.h>
@@ -98,10 +99,11 @@ void qwen3_tts_default_params(Qwen3TtsParams * params) {
     params->language_id       = 2050; // en
 }
 
-Qwen3Tts * qwen3_tts_create(const char * model_dir, int32_t n_threads) {
+Qwen3Tts * qwen3_tts_create(const char * model_dir, int32_t n_threads, bool use_gpu) {
     if (!model_dir) return nullptr;
     auto * tts = new Qwen3Tts;
     (void)n_threads; // thread count is set per-call via params
+    qwen3_tts::set_preferred_backend_use_gpu(use_gpu);
     if (!tts->engine.load_models(model_dir)) {
         tts->last_error = tts->engine.get_error();
         delete tts;

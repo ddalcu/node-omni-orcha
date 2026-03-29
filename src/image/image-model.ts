@@ -42,6 +42,7 @@ export function createImageModel(modelPath: string): ImageModel {
 
       try {
         const binding = loadBinding();
+        const forceCpu = options?.useGpu === false;
 
         const buildOpts = (overrides?: Partial<ImageLoadOptions>) => ({
           clipLPath: options?.clipLPath ?? '',
@@ -50,8 +51,8 @@ export function createImageModel(modelPath: string): ImageModel {
           vaePath: options?.vaePath ?? '',
           highNoiseDiffusionModelPath: options?.highNoiseDiffusionModelPath ?? '',
           threads: options?.threads ?? -1,
-          keepVaeOnCpu: overrides?.keepVaeOnCpu ?? options?.keepVaeOnCpu ?? false,
-          offloadToCpu: overrides?.offloadToCpu ?? options?.offloadToCpu ?? false,
+          keepVaeOnCpu: forceCpu || (overrides?.keepVaeOnCpu ?? options?.keepVaeOnCpu ?? false),
+          offloadToCpu: forceCpu || (overrides?.offloadToCpu ?? options?.offloadToCpu ?? false),
           flashAttn: options?.flashAttn ?? true,
           vaeDecodeOnly: options?.vaeDecodeOnly ?? true,
         });
@@ -62,7 +63,7 @@ export function createImageModel(modelPath: string): ImageModel {
         } catch (err: any) {
           const msg = String(err?.message ?? err).toLowerCase();
           const isOom = msg.includes('out of memory') || msg.includes('cuda error') || msg.includes('alloc');
-          if (!isOom || options?.offloadToCpu) throw err;
+          if (!isOom || forceCpu || options?.offloadToCpu) throw err;
 
           // Retry 1: keep VAE on CPU (frees ~300MB VRAM for FLUX)
           if (!options?.keepVaeOnCpu) {

@@ -1,7 +1,9 @@
 import { loadBinding } from '../binding-loader.ts';
+import { detectGpu } from '../utils/gpu.ts';
 import type {
   SttModel,
   SttModelStatus,
+  SttLoadOptions,
   TranscribeOptions,
   TranscribeResult,
 } from '../types.ts';
@@ -33,12 +35,14 @@ export function createSttModel(modelPath: string): SttModel {
     get loading() { return loading; },
     get busy() { return isBusy; },
 
-    async load() {
+    async load(options?: SttLoadOptions) {
       if (loaded || loading) return;
       loading = true;
       try {
         const binding = loadBinding();
-        nativeCtx = await (binding['createSttContext'] as Function)(modelPath);
+        const gpu = detectGpu();
+        const useGpu = options?.useGpu ?? (gpu.backend !== 'cpu');
+        nativeCtx = await (binding['createSttContext'] as Function)(modelPath, { useGpu });
         loaded = true;
       } finally {
         loading = false;

@@ -1,4 +1,5 @@
 import { loadBinding } from '../binding-loader.ts';
+import { detectGpu } from '../utils/gpu.ts';
 import type {
   TtsModel,
   TtsModelStatus,
@@ -32,12 +33,14 @@ export function createTtsModel(modelPath: string): TtsModel {
     get loading() { return loading; },
     get busy() { return isBusy; },
 
-    async load(_options?: TtsLoadOptions) {
+    async load(options?: TtsLoadOptions) {
       if (loaded || loading) return;
       loading = true;
       try {
         const binding = loadBinding();
-        nativeCtx = await (binding['createTtsContext'] as Function)(modelPath, {});
+        const gpu = detectGpu();
+        const useGpu = options?.useGpu ?? (gpu.backend !== 'cpu');
+        nativeCtx = await (binding['createTtsContext'] as Function)(modelPath, { useGpu });
         loaded = true;
       } finally {
         loading = false;

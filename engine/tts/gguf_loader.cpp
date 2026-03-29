@@ -10,6 +10,7 @@ namespace {
 struct shared_backend_state {
     ggml_backend_t backend = nullptr;
     int32_t ref_count = 0;
+    bool use_gpu = true;
 };
 
 shared_backend_state & get_shared_backend_state() {
@@ -24,6 +25,11 @@ GGUFLoader::~GGUFLoader() {
     close();
 }
 
+void set_preferred_backend_use_gpu(bool use_gpu) {
+    auto & shared = get_shared_backend_state();
+    shared.use_gpu = use_gpu;
+}
+
 ggml_backend_t init_preferred_backend(const char * component_name, std::string * error_msg) {
     if (error_msg) error_msg->clear();
 
@@ -33,12 +39,15 @@ ggml_backend_t init_preferred_backend(const char * component_name, std::string *
         return shared.backend;
     }
 
-    ggml_backend_t backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_IGPU, nullptr);
-    if (!backend) {
-        backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_GPU, nullptr);
-    }
-    if (!backend) {
-        backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_ACCEL, nullptr);
+    ggml_backend_t backend = nullptr;
+    if (shared.use_gpu) {
+        backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_IGPU, nullptr);
+        if (!backend) {
+            backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_GPU, nullptr);
+        }
+        if (!backend) {
+            backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_ACCEL, nullptr);
+        }
     }
     if (!backend) {
         backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);

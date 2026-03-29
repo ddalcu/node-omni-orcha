@@ -59,13 +59,15 @@ TtsContext::TtsContext(const Napi::CallbackInfo& info)
     throw Napi::Error::New(env, "Model directory path must not be empty");
   }
   int threads = 4;
+  bool use_gpu = true;
 
   if (info.Length() >= 2 && info[1].IsObject()) {
     Napi::Object opts = info[1].As<Napi::Object>();
     threads = getInt32Option(opts, "threads", 4);
+    use_gpu = getBoolOption(opts, "useGpu", true);
   }
 
-  tts_ = qwen3_tts_create(modelDir.c_str(), threads);
+  tts_ = qwen3_tts_create(modelDir.c_str(), threads, use_gpu);
   if (!tts_) {
     throw Napi::Error::New(env, std::string("Failed to create Qwen3 TTS from: ") + modelDir);
   }

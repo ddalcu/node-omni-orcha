@@ -73,6 +73,9 @@ bool load_tensor_data_from_file(
     enum ggml_backend_dev_type preferred_backend_type = GGML_BACKEND_DEVICE_TYPE_CPU
 );
 
+// Set GPU preference before loading models. Affects subsequent init_preferred_backend calls.
+void set_preferred_backend_use_gpu(bool use_gpu);
+
 // Helper to initialize backend with GPU preference and CPU fallback
 ggml_backend_t init_preferred_backend(const char * component_name, std::string * error_msg);
 void release_preferred_backend(ggml_backend_t backend);

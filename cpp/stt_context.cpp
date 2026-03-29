@@ -23,8 +23,14 @@ SttContext::SttContext(const Napi::CallbackInfo& info)
     throw Napi::Error::New(env, "Model path must not be empty");
   }
 
+  bool use_gpu = true;
+  if (info.Length() >= 2 && info[1].IsObject()) {
+    Napi::Object opts = info[1].As<Napi::Object>();
+    use_gpu = getBoolOption(opts, "useGpu", true);
+  }
+
   whisper_context_params cparams = whisper_context_default_params();
-  cparams.use_gpu = true;
+  cparams.use_gpu = use_gpu;
   cparams.flash_attn = true;
 
   ctx_ = whisper_init_from_file_with_params(model_path_.c_str(), cparams);

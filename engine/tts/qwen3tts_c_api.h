@@ -3,6 +3,9 @@
 #define QWEN3TTS_C_API_H
 
 #include <stdint.h>
+#ifndef __cplusplus
+#include <stdbool.h>
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -35,8 +38,9 @@ void qwen3_tts_default_params(Qwen3TtsParams* params);
 /* Create TTS engine and load models from directory.
  * model_dir must contain qwen3-tts-0.6b-f16.gguf and
  * qwen3-tts-tokenizer-f16.gguf.
+ * use_gpu: true to use GPU backend, false to force CPU.
  * Returns NULL on failure. */
-Qwen3Tts* qwen3_tts_create(const char* model_dir, int32_t n_threads);
+Qwen3Tts* qwen3_tts_create(const char* model_dir, int32_t n_threads, bool use_gpu);
 
 /* Check if models are loaded */
 int qwen3_tts_is_loaded(const Qwen3Tts* tts);

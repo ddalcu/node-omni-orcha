@@ -38,9 +38,11 @@ export type {
   VideoOptions,
   SampleMethod,
   Scheduler,
+  SttLoadOptions,
   TranscribeOptions,
   TranscribeResult,
   TranscribeSegment,
+  TtsLoadOptions,
   SpeakOptions,
   // Status types
   SystemStatus,
@@ -81,12 +83,12 @@ export async function loadModel(filePath: string, options: LoadModelOptions & { 
     }
     case 'stt': {
       const model = createSttModel(filePath);
-      await model.load();
+      await model.load(options);
       return model;
     }
     case 'tts': {
       const model = createTtsModel(filePath);
-      await model.load();
+      await model.load(options);
       return model;
     }
     default:

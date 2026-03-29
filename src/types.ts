@@ -30,6 +30,9 @@ export interface GGUFModelInfo {
 
 export interface LlmLoadOptions {
   contextSize?: number;
+  /** Use GPU for inference. Default: true on GPU builds, false on CPU builds.
+   *  When false, forces gpuLayers to 0. For fine-grained control, use gpuLayers directly. */
+  useGpu?: boolean;
   gpuLayers?: number;
   flashAttn?: boolean;
   /** Enable embedding mode (required for embed/embedBatch). Default: false. */
@@ -171,6 +174,9 @@ export const SCHEDULERS = {
 export type Scheduler = (typeof SCHEDULERS)[keyof typeof SCHEDULERS];
 
 export interface ImageLoadOptions {
+  /** Use GPU for inference. Default: true on GPU builds, false on CPU builds.
+   *  When false, forces offloadToCpu to true. For fine-grained control, use keepVaeOnCpu/offloadToCpu directly. */
+  useGpu?: boolean;
   /** For FLUX.1: path to CLIP-L text encoder */
   clipLPath?: string;
   /** For FLUX.1/WAN: path to T5-XXL or UMT5 text encoder */
@@ -258,6 +264,11 @@ export interface ImageModel {
 
 // --- STT Types ---
 
+export interface SttLoadOptions {
+  /** Use GPU for inference. Default: true on GPU builds, false on CPU builds. */
+  useGpu?: boolean;
+}
+
 export interface TranscribeOptions {
   language?: string;
 }
@@ -281,7 +292,7 @@ export interface SttModel {
   readonly loading: boolean;
   readonly busy: boolean;
 
-  load(): Promise<void>;
+  load(options?: SttLoadOptions): Promise<void>;
   transcribe(audio: Buffer, options?: TranscribeOptions): Promise<TranscribeResult>;
   detectLanguage(audio: Buffer): Promise<string>;
   unload(): Promise<void>;
@@ -291,7 +302,8 @@ export interface SttModel {
 // --- TTS Types ---
 
 export interface TtsLoadOptions {
-  /** Reserved for future use */
+  /** Use GPU for inference. Default: true on GPU builds, false on CPU builds. */
+  useGpu?: boolean;
 }
 
 export interface SpeakOptions {
@@ -320,7 +332,7 @@ export interface TtsModel {
 export type Model = LlmModel | ImageModel | SttModel | TtsModel;
 
 // Load options with type hint
-export type LoadModelOptions = (LlmLoadOptions | ImageLoadOptions) & { type?: ModelType };
+export type LoadModelOptions = (LlmLoadOptions | ImageLoadOptions | SttLoadOptions | TtsLoadOptions) & { type?: ModelType };
 
 // --- Status Types ---
 

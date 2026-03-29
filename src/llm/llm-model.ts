@@ -54,20 +54,21 @@ export function createLlmModel(modelPath: string): LlmModel {
         const contextSize = options?.contextSize
           ?? (metadata ? calculateOptimalContextSize(metadata) : 4096);
         const isEmbedding = options?.embeddings ?? false;
+        const useGpu = options?.useGpu ?? (gpu.backend !== 'cpu');
         // Embedding models (e.g. nomic-bert) are small and fast on CPU — default to 0 GPU layers
         // to avoid competing for VRAM with the main LLM. Users can still override with gpuLayers.
-        const defaultGpuLayers = gpu.backend === 'cpu' ? 0 : (isEmbedding ? 0 : -1);
+        const defaultGpuLayers = !useGpu ? 0 : (isEmbedding ? 0 : -1);
         const requestedGpuLayers = options?.gpuLayers ?? defaultGpuLayers;
         const totalLayers = metadata?.blockCount ?? 0;
 
         const buildOpts = (gpuLayers: number) => ({
           contextSize,
           gpuLayers,
-          flashAttn: options?.flashAttn ?? (gpu.backend !== 'cpu'),
+          flashAttn: options?.flashAttn ?? useGpu,
           embeddings: options?.embeddings ?? false,
-          batchSize: options?.batchSize ?? (gpu.backend !== 'cpu' ? 4096 : 512),
-          cacheTypeK: options?.cacheTypeK ?? (gpu.backend === 'metal' ? 'q8_0' : 'f16'),
-          cacheTypeV: options?.cacheTypeV ?? (gpu.backend === 'metal' ? 'q8_0' : 'f16'),
+          batchSize: options?.batchSize ?? (useGpu ? 4096 : 512),
+          cacheTypeK: options?.cacheTypeK ?? (gpu.backend === 'metal' && useGpu ? 'q8_0' : 'f16'),
+          cacheTypeV: options?.cacheTypeV ?? (gpu.backend === 'metal' && useGpu ? 'q8_0' : 'f16'),
           chatTemplate: options?.chatTemplate ?? '',
           ...(options?.mmprojPath ? { mmprojPath: options.mmprojPath } : {}),
           ...(options?.imageMinTokens != null ? { imageMinTokens: options.imageMinTokens } : {}),

@@ -5,6 +5,9 @@
 #ifdef __APPLE__
 #include <coreml_provider_factory.h>
 #endif
+#ifdef _WIN32
+#include <windows.h>
+#endif
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -157,7 +160,15 @@ kokoro_context* kokoro_create(const char* model_path, const char* voices_path,
 #endif
         }
 
+#ifdef _WIN32
+        // MSVC Ort::Session requires wide string path
+        int wlen = MultiByteToWideChar(CP_UTF8, 0, model_path, -1, nullptr, 0);
+        std::wstring wpath(wlen, L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, model_path, -1, wpath.data(), wlen);
+        ctx->session = Ort::Session(ctx->env, wpath.c_str(), opts);
+#else
         ctx->session = Ort::Session(ctx->env, model_path, opts);
+#endif
     } catch (const Ort::Exception& e) {
         ctx->last_error = std::string("ONNX session creation failed: ") + e.what();
         delete ctx;

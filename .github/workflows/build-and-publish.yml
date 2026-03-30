@@ -66,14 +66,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ runner.os == 'Windows' && 'C:\Users\runneradmin\AppData\Local\ccache' || '~/.cache/ccache' }}
-          key: ccache-${{ matrix.package }}-${{ hashFiles('engine/**/*.cpp', 'engine/**/*.h', 'engine/**/*.hpp', 'cpp/**/*.cpp', 'cpp/**/*.h', 'CMakeLists.txt') }}
+          key: ccache-${{ matrix.package }}-${{ hashFiles('engine/**/*.cpp', 'engine/**/*.h', 'engine/**/*.hpp', 'engine/**/*.cu', 'engine/**/*.cuh', 'cpp/**/*.cpp', 'cpp/**/*.h', 'CMakeLists.txt') }}
           restore-keys: |
             ccache-${{ matrix.package }}-
 
       - name: Configure ccache
         shell: bash
         run: |
-          ccache --set-config=max_size=1G
+          ccache --set-config=max_size=3G
           ccache --set-config=compression=true
           ccache -z
 
@@ -123,6 +123,7 @@ jobs:
         run: |
           export CMAKE_C_COMPILER_LAUNCHER=ccache
           export CMAKE_CXX_COMPILER_LAUNCHER=ccache
+          export CMAKE_CUDA_COMPILER_LAUNCHER=ccache
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             # Find real Windows SDK rc.exe — npm's "rc" package in node_modules/.bin shadows it
             RC_EXE=$(find "/c/Program Files (x86)/Windows Kits" -name "rc.exe" -path "*/x64/*" 2>/dev/null | sort -V | tail -1)

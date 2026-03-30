@@ -210,6 +210,33 @@ if(MSVC)
   target_compile_definitions(mtmd PRIVATE _CRT_SECURE_NO_WARNINGS _USE_MATH_DEFINES)
 endif()
 
+# --- Kokoro TTS (ONNX Runtime, no external dependencies) ---
+# Optional: only built if ONNX Runtime is downloaded
+set(KOKORO_ENABLED OFF)
+set(ONNXRUNTIME_DIR "${CMAKE_SOURCE_DIR}/engine/vendor/onnxruntime")
+
+if(EXISTS "${ONNXRUNTIME_DIR}/include/onnxruntime_c_api.h")
+  set(KOKORO_ENABLED ON)
+  message(STATUS "[omni] Kokoro TTS: ENABLED")
+  message(STATUS "[omni]   ONNX Runtime: ${ONNXRUNTIME_DIR}")
+
+  add_library(kokoro STATIC
+    engine/kokoro/kokoro.cpp
+    engine/kokoro/phonemize.cpp
+  )
+  target_include_directories(kokoro PUBLIC
+    ${CMAKE_SOURCE_DIR}/engine/kokoro
+  )
+  target_include_directories(kokoro PRIVATE
+    ${ONNXRUNTIME_DIR}/include
+  )
+  target_compile_features(kokoro PRIVATE cxx_std_17)
+  set_target_properties(kokoro PROPERTIES POSITION_INDEPENDENT_CODE ON)
+  target_compile_definitions(kokoro PRIVATE KOKORO_ENABLED)
+else()
+  message(STATUS "[omni] Kokoro TTS: DISABLED (run: bash scripts/download-onnxruntime.sh)")
+endif()
+
 # --- Unified omni.node addon ---
 set(OMNI_SOURCES
   cpp/omni_binding.cpp
@@ -218,6 +245,10 @@ set(OMNI_SOURCES
   cpp/tts_context.cpp
   cpp/image_context.cpp
 )
+
+if(KOKORO_ENABLED)
+  list(APPEND OMNI_SOURCES cpp/kokoro_context.cpp)
+endif()
 
 add_library(omni SHARED ${OMNI_SOURCES} ${CMAKE_JS_SRC})
 set_target_properties(omni PROPERTIES
@@ -245,6 +276,13 @@ target_include_directories(omni PRIVATE
   ${CMAKE_SOURCE_DIR}/engine/mtmd
 )
 
+if(KOKORO_ENABLED)
+  target_include_directories(omni PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine/kokoro
+    ${ONNXRUNTIME_DIR}/include
+  )
+endif()
+
 target_link_libraries(omni PRIVATE
   ${CMAKE_JS_LIB}
   llama
@@ -254,6 +292,27 @@ target_link_libraries(omni PRIVATE
   qwen3_tts
   stable-diffusion
 )
+
+if(KOKORO_ENABLED)
+  target_link_libraries(omni PRIVATE kokoro)
+  # Link ONNX Runtime shared library
+  if(APPLE)
+    target_link_libraries(omni PRIVATE "${ONNXRUNTIME_DIR}/lib/libonnxruntime.dylib")
+    set_target_properties(omni PROPERTIES
+      INSTALL_RPATH "@loader_path;${ONNXRUNTIME_DIR}/lib"
+      BUILD_RPATH "${ONNXRUNTIME_DIR}/lib"
+    )
+  elseif(MSVC)
+    target_link_libraries(omni PRIVATE "${ONNXRUNTIME_DIR}/lib/onnxruntime.lib")
+  else()
+    target_link_libraries(omni PRIVATE "${ONNXRUNTIME_DIR}/lib/libonnxruntime.so")
+    set_target_properties(omni PROPERTIES
+      INSTALL_RPATH "$ORIGIN;${ONNXRUNTIME_DIR}/lib"
+      BUILD_RPATH "${ONNXRUNTIME_DIR}/lib"
+    )
+  endif()
+  target_compile_definitions(omni PRIVATE KOKORO_ENABLED)
+endif()
 
 target_compile_definitions(omni PRIVATE
   NAPI_VERSION=9

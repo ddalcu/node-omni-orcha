@@ -105,6 +105,11 @@ jobs:
           echo "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.1/bin" >> $GITHUB_PATH
           echo "CUDA_PATH=C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.1" >> $GITHUB_ENV
 
+      # --- ONNX Runtime (for Kokoro TTS) ---
+      - name: Download ONNX Runtime
+        shell: bash
+        run: GPU_BACKEND=${{ matrix.gpu }} bash scripts/download-onnxruntime.sh
+
       # --- Build ---
       - name: Install dependencies
         run: npm install
@@ -159,6 +164,10 @@ jobs:
           cp build/Release/*.node artifacts/
           cp build/Release/*.metallib artifacts/ 2>/dev/null || true
           cp build/Release/*.dll artifacts/ 2>/dev/null || true
+          # Bundle ONNX Runtime shared library for Kokoro TTS
+          cp engine/vendor/onnxruntime/lib/libonnxruntime*.dylib artifacts/ 2>/dev/null || true
+          cp engine/vendor/onnxruntime/lib/libonnxruntime*.so* artifacts/ 2>/dev/null || true
+          cp engine/vendor/onnxruntime/lib/onnxruntime*.dll artifacts/ 2>/dev/null || true
           cp packages/${{ matrix.package }}/package.json artifacts/
           echo "Packaged artifacts:"
           ls -lh artifacts/

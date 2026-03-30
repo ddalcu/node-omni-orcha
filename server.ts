@@ -1,10 +1,11 @@
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { existsSync, statSync, writeFileSync } from 'node:fs';
+import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createServer as createHttpsServer } from 'node:https';
+import { existsSync, statSync, writeFileSync, readFileSync } from 'node:fs';
 import { spawn, type ChildProcess } from 'node:child_process';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createModel, getSystemStatus } from './src/index.ts';
-import type { LlmModel, SttModel, TtsModel, ImageModel, ChatMessage } from './src/types.ts';
+import type { LlmModel, SttModel, TtsModel, KokoroModel, ImageModel, ChatMessage } from './src/types.ts';
 
 // --- Config ---
 const PORT = Number(process.env.PORT ?? 3333);
@@ -16,6 +17,7 @@ const LLM_PATH = process.env.LLM_MODEL ?? `${MODELS_DIR}/qwen3-5-4b/Qwen3.5-4B-I
 const LLM_MMPROJ_PATH = process.env.LLM_MMPROJ ?? `${MODELS_DIR}/qwen3-5-4b/mmproj-F16.gguf`;
 const STT_PATH = process.env.STT_MODEL ?? `${MODELS_DIR}/whisper-tiny/whisper-tiny.bin`;
 const TTS_PATH = process.env.TTS_MODEL ?? `${MODELS_DIR}/qwen3-tts`;
+const KOKORO_PATH = process.env.KOKORO_MODEL ?? `${MODELS_DIR}/kokoro`;
 
 // FLUX 2 Klein (image generation)
 const IMAGE_DIR = `${MODELS_DIR}/flux2-klein`;
@@ -81,7 +83,15 @@ const MODEL_GROUPS: ModelGroup[] = [
     ],
   },
   {
-    id: 'tts', label: 'TTS (Qwen3-TTS)', scriptFlag: '--tts',
+    id: 'kokoro', label: 'Kokoro TTS (fast, 49 preset voices)', scriptFlag: '--kokoro',
+    files: [
+      { path: `${MODELS_DIR}/kokoro/kokoro-v1.0.fp16.onnx`, label: 'Kokoro 82M FP16 ONNX', expectedSize: '~163 MB' },
+      { path: `${MODELS_DIR}/kokoro/voices.bin`, label: 'Voice embeddings (49 voices)', expectedSize: '~25 MB' },
+      { path: `${MODELS_DIR}/kokoro/phoneme_dict.bin`, label: 'Phoneme dictionary (126K words)', expectedSize: '~3.4 MB' },
+    ],
+  },
+  {
+    id: 'tts', label: 'TTS (Qwen3-TTS, voice cloning)', scriptFlag: '--tts',
     files: [
       { path: `${MODELS_DIR}/qwen3-tts/qwen3-tts-0.6b-f16.gguf`, label: 'Qwen3-TTS 0.6B F16', expectedSize: '~1 GB' },
       { path: `${MODELS_DIR}/qwen3-tts/qwen3-tts-tokenizer-f16.gguf`, label: 'Qwen3-TTS Tokenizer', expectedSize: '~200 MB' },
@@ -112,15 +122,53 @@ const models: {
   llm: LlmModel | null;
   stt: SttModel | null;
   tts: TtsModel | null;
+  kokoro: KokoroModel | null;
   image: ImageModel | null;
   video: ImageModel | null;
-} = { llm: null, stt: null, tts: null, image: null, video: null };
+} = { llm: null, stt: null, tts: null, kokoro: null, image: null, video: null };
 
 let videoVariant: VideoVariant | null = null;
 
 const loading: Record<string, Promise<void> | null> = {
-  llm: null, stt: null, tts: null, image: null, video: null,
+  llm: null, stt: null, tts: null, kokoro: null, image: null, video: null, voice: null,
 };
+
+let voiceAbort = false;
+const voiceHistory: ChatMessage[] = [
+  { role: 'system', content: 'You are a friendly voice assistant. Keep responses concise (1-3 sentences) since they will be spoken aloud.' },
+];
+
+// --- Voice pipeline loader (uses existing STT + TTS + LLM) ---
+
+/** Get the active TTS for the voice pipeline — prefer Kokoro (fast), fall back to Qwen3. */
+function voiceTts(): TtsModel | KokoroModel | null {
+  return models.kokoro ?? models.tts;
+}
+
+function loadVoice(): Promise<void> {
+  if (models.stt && voiceTts() && models.llm) return Promise.resolve();
+  if (loading.voice) return loading.voice;
+
+  // Prefer Kokoro for voice pipeline (fast, preset voices).
+  // Fall back to Qwen3-TTS if Kokoro model files are not available.
+  const useKokoro = existsSync(KOKORO_PATH + '/kokoro-v1.0.fp16.onnx');
+  const ttsLabel = useKokoro ? 'Kokoro' : 'Qwen3-TTS';
+  console.log(`Loading voice pipeline (STT + LLM + ${ttsLabel})...`);
+
+  loading.voice = (async () => {
+    const loaders: Promise<void>[] = [];
+    if (!models.stt) loaders.push(loadStt());
+    if (!models.llm) loaders.push(loadLlm());
+    if (useKokoro && !models.kokoro) {
+      loaders.push(loadKokoro());
+    } else if (!models.tts) {
+      loaders.push(loadTts());
+    }
+    await Promise.all(loaders);
+    console.log('Voice pipeline ready');
+  })().catch(e => { loading.voice = null; throw e; });
+  return loading.voice;
+}
 
 // --- Helpers ---
 
@@ -189,11 +237,26 @@ function loadTts(): Promise<void> {
   console.log(`Loading TTS (qwen3): ${TTS_PATH}`);
   loading.tts = (async () => {
     const m = createModel(TTS_PATH, 'tts');
-    await m.load({ engine: 'qwen3' });
+    await m.load();
     models.tts = m;
     console.log('TTS ready');
   })().catch(e => { loading.tts = null; throw e; });
   return loading.tts;
+}
+
+function loadKokoro(): Promise<void> {
+  if (models.kokoro) return Promise.resolve();
+  if (loading.kokoro) return loading.kokoro;
+  if (!KOKORO_PATH) return Promise.reject(new Error('KOKORO_MODEL not configured'));
+
+  console.log(`Loading Kokoro TTS: ${KOKORO_PATH}`);
+  loading.kokoro = (async () => {
+    const m = createModel(KOKORO_PATH, 'kokoro');
+    await m.load();
+    models.kokoro = m;
+    console.log(`Kokoro ready (${m.listVoices().length} voices)`);
+  })().catch(e => { loading.kokoro = null; throw e; });
+  return loading.kokoro;
 }
 
 function loadImage(): Promise<void> {
@@ -247,6 +310,111 @@ async function loadVideo(variant: VideoVariant = '5b'): Promise<void> {
   return loading.video;
 }
 
+// --- Voice endpoint (Whisper STT → LLM → TTS) ---
+
+async function handleVoice(req: IncomingMessage, res: ServerResponse) {
+  const tts = voiceTts();
+  if (!models.stt || !models.llm || !tts) {
+    return errorResponse(res, 'Voice pipeline not loaded. Click the Voice tab to load it.', 503);
+  }
+
+  voiceAbort = false;
+
+  const body = JSON.parse(await readBody(req));
+  const audioBuffer = Buffer.from(body.audio, 'base64');
+  const language = body.language ?? 'en';
+
+  if (audioBuffer.length < 100) {
+    return errorResponse(res, 'Audio too short', 400);
+  }
+
+  // SSE stream
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+  });
+
+  const send = (data: unknown) => {
+    try { res.write(`data: ${JSON.stringify(data)}\n\n`); } catch {}
+  };
+
+  try {
+    // Step 1: STT
+    send({ type: 'status', text: 'Transcribing...' });
+    const sttStart = performance.now();
+    const sttResult = await models.stt.transcribe(audioBuffer, { language });
+    const userText = sttResult.text.trim();
+    console.log(`[voice] STT: "${userText}" (${((performance.now() - sttStart)).toFixed(0)}ms)`);
+
+    if (!userText || voiceAbort) {
+      send({ type: 'done' });
+      res.end();
+      return;
+    }
+    send({ type: 'stt', text: userText });
+
+    // Step 2: LLM (with conversation history)
+    if (voiceAbort) { send({ type: 'done' }); res.end(); return; }
+    send({ type: 'status', text: 'Thinking...' });
+
+    voiceHistory.push({ role: 'user', content: userText });
+    // Keep history bounded (system + last 20 turns)
+    while (voiceHistory.length > 21) voiceHistory.splice(1, 1);
+
+    let llmText = '';
+    for await (const chunk of models.llm.stream(
+      voiceHistory,
+      { temperature: 0.7, maxTokens: 256, thinkingBudget: 0 }
+    )) {
+      if (voiceAbort) break;
+      if (chunk.content && !chunk.done) {
+        llmText += chunk.content;
+        send({ type: 'llm', content: chunk.content });
+      }
+    }
+    if (llmText) {
+      send({ type: 'llm', content: '', done: true });
+      voiceHistory.push({ role: 'assistant', content: llmText });
+    }
+    console.log(`[voice] LLM: "${llmText.slice(0, 80)}..." (${llmText.length} chars)`);
+
+    if (!llmText || voiceAbort) {
+      send({ type: 'done' });
+      res.end();
+      return;
+    }
+
+    // Step 3: TTS — complete WAV (Kokoro or Qwen3)
+    if (voiceAbort) { send({ type: 'done' }); res.end(); return; }
+    send({ type: 'status', text: 'Speaking...' });
+
+    const ttsStart = performance.now();
+    const speakOpts: Record<string, unknown> = {};
+    if (tts.type === 'kokoro') {
+      speakOpts.voice = body.voice ?? '';
+      speakOpts.speed = body.speed ?? 1.0;
+    }
+    const wav = await tts.speak(llmText, speakOpts as any);
+    const ttsTime = ((performance.now() - ttsStart) / 1000).toFixed(1);
+    const ttsEngine = tts.type === 'kokoro' ? 'Kokoro' : 'Qwen3';
+    console.log(`[voice] TTS (${ttsEngine}): ${wav.length} bytes in ${ttsTime}s`);
+
+    // Send complete WAV as single base64 chunk
+    send({ type: 'audio', wav: wav.toString('base64') });
+    send({ type: 'done' });
+  } catch (err: any) {
+    send({ type: 'error', message: err.message });
+  }
+
+  res.end();
+}
+
+async function handleVoiceAbort(_req: IncomingMessage, res: ServerResponse) {
+  voiceAbort = true;
+  json(res, { ok: true });
+}
+
 // --- Routes ---
 
 async function handleLoad(req: IncomingMessage, res: ServerResponse) {
@@ -257,8 +425,10 @@ async function handleLoad(req: IncomingMessage, res: ServerResponse) {
     llm: loadLlm,
     stt: loadStt,
     tts: loadTts,
+    kokoro: loadKokoro,
     image: loadImage,
     video: () => loadVideo((body.variant ?? '5b') as VideoVariant),
+    voice: loadVoice,
   };
 
   const loader = loaders[type];
@@ -363,25 +533,26 @@ async function handleStt(req: IncomingMessage, res: ServerResponse) {
 }
 
 async function handleTts(req: IncomingMessage, res: ServerResponse) {
-  if (!models.tts) return errorResponse(res, 'TTS not loaded. Click the TTS tab to load it.', 503);
+  // Support both Kokoro and Qwen3 TTS — prefer Kokoro if loaded
+  const ttsModel = models.kokoro ?? models.tts;
+  if (!ttsModel) return errorResponse(res, 'TTS not loaded. Load Kokoro or Qwen3-TTS first.', 503);
 
   const body = JSON.parse(await readBody(req));
   const text = body.text ?? '';
   if (!text) return errorResponse(res, 'Missing "text" field', 400);
 
   try {
-    const speakOpts: Record<string, unknown> = {
-      temperature: body.temperature ?? undefined,
-    };
+    const speakOpts: Record<string, unknown> = {};
 
-    if (models.tts.engine === 'qwen3') {
-      speakOpts.referenceAudioPath = body.referenceAudioPath ?? '';
-    } else {
+    if (ttsModel.type === 'kokoro') {
       speakOpts.voice = body.voice ?? '';
       speakOpts.speed = body.speed ?? 1.0;
+    } else {
+      speakOpts.referenceAudioPath = body.referenceAudioPath ?? '';
+      speakOpts.temperature = body.temperature ?? undefined;
     }
 
-    const wav = await models.tts.speak(text, speakOpts as any);
+    const wav = await ttsModel.speak(text, speakOpts as any);
     res.writeHead(200, {
       'Content-Type': 'audio/wav',
       'Content-Length': wav.length,
@@ -462,6 +633,9 @@ async function handleStatus(_req: IncomingMessage, res: ServerResponse) {
   if (models.tts) {
     modelStatuses.push(models.tts.getStatus());
   }
+  if (models.kokoro) {
+    modelStatuses.push(models.kokoro.getStatus());
+  }
   if (models.image) {
     modelStatuses.push(models.image.getStatus());
   }
@@ -475,6 +649,7 @@ async function handleStatus(_req: IncomingMessage, res: ServerResponse) {
       llm: models.llm ? models.llm.getStatus() : { loaded: false, loading: loading.llm !== null },
       stt: models.stt ? models.stt.getStatus() : { loaded: false, loading: loading.stt !== null },
       tts: models.tts ? models.tts.getStatus() : { loaded: false, loading: loading.tts !== null },
+      kokoro: models.kokoro ? models.kokoro.getStatus() : { loaded: false, loading: loading.kokoro !== null },
       image: models.image ? models.image.getStatus() : { loaded: false, loading: loading.image !== null },
       video: models.video
         ? { ...models.video.getStatus(), variant: videoVariant }
@@ -565,6 +740,17 @@ async function router(req: IncomingMessage, res: ServerResponse) {
     res.end(STATUS_HTML);
     return;
   }
+  if (method === 'GET' && url === '/api/thinking.mp3') {
+    const mp3Path = path.join(__dirname, 'test/fixtures/keyboard-beep-calc.mp3');
+    if (existsSync(mp3Path)) {
+      const data = readFileSync(mp3Path);
+      res.writeHead(200, { 'Content-Type': 'audio/mpeg', 'Content-Length': data.length, 'Cache-Control': 'public, max-age=86400' });
+      res.end(data);
+    } else {
+      res.writeHead(404); res.end('Not found');
+    }
+    return;
+  }
   if (method === 'GET' && url === '/api/status') return handleStatus(req, res);
   if (method === 'GET' && url === '/api/models') return handleModelsApi(req, res);
   if (method === 'GET' && url.startsWith('/api/models/download')) return handleDownloadApi(req, res);
@@ -572,8 +758,14 @@ async function router(req: IncomingMessage, res: ServerResponse) {
   if (method === 'POST' && url === '/api/chat') return handleChat(req, res);
   if (method === 'POST' && url.startsWith('/api/stt')) return handleStt(req, res);
   if (method === 'POST' && url === '/api/tts') return handleTts(req, res);
+  if (method === 'GET' && url === '/api/voices') {
+    if (!models.kokoro) return json(res, { voices: [] });
+    return json(res, { voices: models.kokoro.listVoices() });
+  }
   if (method === 'POST' && url === '/api/image') return handleImage(req, res);
   if (method === 'POST' && url === '/api/video') return handleVideo(req, res);
+  if (method === 'POST' && url === '/api/voice') return handleVoice(req, res);
+  if (method === 'POST' && url === '/api/voice/abort') return handleVoiceAbort(req, res);
 
   res.writeHead(404);
   res.end('Not found');
@@ -581,10 +773,19 @@ async function router(req: IncomingMessage, res: ServerResponse) {
 
 // --- Boot (no model loading — on-demand only) ---
 
-const server = createServer(router);
-server.listen(PORT, () => {
-  console.log(`node-omni-orcha server on http://localhost:${PORT}`);
-  console.log(`Status dashboard: http://localhost:${PORT}/status`);
+const certPath = path.join(__dirname, 'certs', 'cert.pem');
+const keyPath = path.join(__dirname, 'certs', 'key.pem');
+const useHttps = existsSync(certPath) && existsSync(keyPath);
+
+const server = useHttps
+  ? createHttpsServer({ cert: readFileSync(certPath), key: readFileSync(keyPath) }, router)
+  : createHttpServer(router);
+
+server.listen(PORT, '0.0.0.0', () => {
+  const proto = useHttps ? 'https' : 'http';
+  console.log(`node-omni-orcha server on ${proto}://localhost:${PORT}`);
+  console.log(`Status dashboard: ${proto}://localhost:${PORT}/status`);
+  if (useHttps) console.log('HTTPS enabled (self-signed cert — accept the warning on your phone)');
   console.log('Models load on-demand when you click a tab');
 });
 
@@ -681,6 +882,19 @@ const HTML = /* html */ `<!DOCTYPE html>
   .download-log { background: #0a0a0a; border: 1px solid #222; border-radius: 4px; padding: 8px; margin-top: 8px; font-family: monospace; font-size: 0.75rem; color: #888; max-height: 200px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; display: none; }
   .download-log.active { display: block; }
   .models-dir { font-size: 0.75rem; color: #555; margin-bottom: 8px; word-break: break-all; }
+
+  .voice-log { background: #111; border: 1px solid #222; border-radius: 4px; padding: 12px; min-height: 120px; max-height: 300px; overflow-y: auto; margin-bottom: 8px; font-size: 0.9rem; line-height: 1.6; }
+  .voice-log .voice-turn { margin-bottom: 8px; }
+  .voice-log .voice-user { color: #7ab; }
+  .voice-log .voice-assistant { color: #ccc; }
+  .voice-log .voice-status { color: #555; font-size: 0.8rem; font-style: italic; }
+  .voice-controls { display: flex; gap: 8px; margin-bottom: 8px; }
+  .voice-talk-btn { flex: 1; padding: 14px; font-size: 1rem; text-align: center; }
+  .voice-talk-btn.recording { background: #5a2020; border-color: #a44; color: #faa; animation: pulse 0.8s infinite; }
+  .voice-talk-btn.processing { background: #2a2a4a; border-color: #55a; color: #aaf; }
+  .voice-mic-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; padding: 6px 10px; background: #111; border: 1px solid #222; border-radius: 4px; font-size: 0.8rem; }
+  .voice-mic-icon { font-size: 1rem; }
+  .voice-mic-row select { flex: 1; padding: 4px; background: #1a1a1a; border: 1px solid #333; color: #e0e0e0; border-radius: 4px; font-size: 0.8rem; }
 </style>
 </head>
 <body>
@@ -693,6 +907,7 @@ const HTML = /* html */ `<!DOCTYPE html>
   <button class="tab" data-panel="tts" data-model="tts">TTS</button>
   <button class="tab" data-panel="image" data-model="image">Image</button>
   <button class="tab" data-panel="video" data-model="video">Video</button>
+  <button class="tab" data-panel="voice" data-model="voice">Voice</button>
 </div>
 
 <!-- Models -->
@@ -794,6 +1009,30 @@ const HTML = /* html */ `<!DOCTYPE html>
   </div>
   <div class="progress" id="video-progress"><div class="progress-bar"></div></div>
   <div class="output" id="video-output"></div>
+</div>
+
+<!-- Voice -->
+<div class="panel" id="voice">
+  <div class="voice-mic-row" id="voice-mic-row">
+    <span class="voice-mic-icon">&#127908;</span>
+    <select id="voice-mic-select"></select>
+  </div>
+  <div class="voice-log" id="voice-log"></div>
+  <div class="progress" id="voice-progress"><div class="progress-bar"></div></div>
+  <div class="voice-controls">
+    <button class="btn voice-talk-btn" id="voice-talk">Start Conversation</button>
+    <button class="btn" id="voice-stop" disabled>End</button>
+  </div>
+  <div class="options-row">
+    <label>Voice <select id="voice-voice"><option value="af_heart">af_heart</option></select></label>
+    <label>Language <select id="voice-lang">
+      <option value="en">English</option><option value="auto">Auto</option>
+    </select></label>
+    <label>Silence <select id="voice-silence">
+      <option value="1000">1.0s</option><option value="1500" selected>1.5s</option><option value="2000">2.0s</option><option value="2500">2.5s</option>
+    </select></label>
+  </div>
+  <div class="output" id="voice-output"></div>
 </div>
 
 <div class="status" id="status"></div>
@@ -916,7 +1155,7 @@ document.getElementById('models-refresh').addEventListener('click', loadModelsSt
 loadModelsStatus();
 
 // --- Model state tracking (image and video are separate models now) ---
-const modelState = { llm: 'off', stt: 'off', tts: 'off', image: 'off', video: 'off' };
+const modelState = { llm: 'off', stt: 'off', tts: 'off', kokoro: 'off', image: 'off', video: 'off', voice: 'off' };
 
 // --- Tabs ---
 document.querySelectorAll('.tab').forEach(tab => {
@@ -978,11 +1217,16 @@ async function checkStatus() {
     if (m.llm && m.llm.loaded) modelState.llm = 'on';
     if (m.stt && m.stt.loaded) modelState.stt = 'on';
     if (m.tts && m.tts.loaded) modelState.tts = 'on';
+    if (m.kokoro && m.kokoro.loaded) modelState.kokoro = 'on';
     if (m.image && m.image.loaded) modelState.image = 'on';
     if (m.video && m.video.loaded) modelState.video = 'on';
+    // Voice pipeline: STT + LLM + any TTS (Kokoro preferred)
+    var hasTts = (m.kokoro && m.kokoro.loaded) || (m.tts && m.tts.loaded);
+    if (hasTts && m.stt && m.stt.loaded && m.llm && m.llm.loaded) modelState.voice = 'on';
     if (m.llm && m.llm.loading) modelState.llm = 'loading';
     if (m.stt && m.stt.loading) modelState.stt = 'loading';
     if (m.tts && m.tts.loading) modelState.tts = 'loading';
+    if (m.kokoro && m.kokoro.loading) modelState.kokoro = 'loading';
     if (m.image && m.image.loading) modelState.image = 'loading';
     if (m.video && m.video.loading) modelState.video = 'loading';
 
@@ -1002,16 +1246,17 @@ async function checkStatus() {
         : 'Type a message...';
     }
 
-    // Qwen3 is now the only TTS engine
-    document.getElementById('tts-options-kokoro').classList.add('hidden');
-    document.getElementById('tts-options-qwen3').classList.remove('hidden');
+    // Toggle TTS options: Kokoro (voice/speed) vs Qwen3 (reference audio)
+    var kokoroLoaded = m.kokoro && m.kokoro.loaded;
+    document.getElementById('tts-options-kokoro').classList.toggle('hidden', !kokoroLoaded);
+    document.getElementById('tts-options-qwen3').classList.toggle('hidden', kokoroLoaded);
   } catch {}
   updateStatus();
 }
 
 function updateStatus() {
   const el = document.getElementById('status');
-  el.innerHTML = ['llm', 'stt', 'tts', 'image', 'video'].map(k => {
+  el.innerHTML = ['llm', 'stt', 'kokoro', 'tts', 'image', 'video'].map(k => {
     const state = modelState[k];
     const cls = state === 'on' ? 'on' : state === 'loading' ? 'loading-text' : 'off';
     const label = state === 'loading' ? 'loading...' : state;
@@ -1493,6 +1738,437 @@ document.getElementById('video-send').addEventListener('click', async () => {
   btn.disabled = false;
 });
 
+// --- Voice tab (continuous conversation with VAD) ---
+var voiceLog = document.getElementById('voice-log');
+var voiceTalkBtn = document.getElementById('voice-talk');
+var voiceStopBtn = document.getElementById('voice-stop');
+var voiceOutput = document.getElementById('voice-output');
+var voiceMicSelect = document.getElementById('voice-mic-select');
+
+var voiceActive = false;      // conversation session is running
+var voiceListening = false;   // currently monitoring mic for speech
+var voiceStream = null;
+var voiceAudioCtx = null;
+var voiceAnalyser = null;
+var voiceRecorder = null;
+var voiceChunks = [];
+var voiceAudioEl = null;
+var voiceVadTimer = null;
+
+var VOICE_THRESHOLD = 0.015;   // RMS level to detect speech
+var VOICE_MIN_SPEECH_MS = 300; // minimum speech duration before we accept it
+
+// --- Microphone enumeration ---
+async function voiceEnumerateMics() {
+  try {
+    var tempStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    tempStream.getTracks().forEach(function(t) { t.stop(); });
+  } catch (e) {}
+  try {
+    var devices = await navigator.mediaDevices.enumerateDevices();
+    var audioInputs = devices.filter(function(d) { return d.kind === 'audioinput'; });
+    voiceMicSelect.innerHTML = '';
+    audioInputs.forEach(function(d, i) {
+      var opt = document.createElement('option');
+      opt.value = d.deviceId;
+      opt.textContent = d.label || ('Microphone ' + (i + 1));
+      voiceMicSelect.appendChild(opt);
+    });
+    if (audioInputs.length === 0) {
+      var opt = document.createElement('option');
+      opt.textContent = 'No microphone found';
+      voiceMicSelect.appendChild(opt);
+    }
+  } catch (e) {
+    voiceMicSelect.innerHTML = '<option>Microphone unavailable</option>';
+  }
+}
+if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+  navigator.mediaDevices.addEventListener('devicechange', voiceEnumerateMics);
+}
+
+function voiceAppendLog(cls, text) {
+  var div = document.createElement('div');
+  div.className = 'voice-turn ' + cls;
+  div.textContent = text;
+  voiceLog.appendChild(div);
+  voiceLog.scrollTop = voiceLog.scrollHeight;
+}
+
+function voiceSetStatus(text) { voiceOutput.textContent = text; }
+
+function arrayBufToBase64(buf) {
+  var binary = '';
+  var bytes = new Uint8Array(buf);
+  for (var i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+// Unlock audio playback on first user gesture — reuse ONE Audio element
+// (mobile Safari only honors the element unlocked by the original gesture)
+var voiceAudioUnlocked = false;
+var voiceLastBlobUrl = null;
+function voiceUnlockAudio() {
+  if (voiceAudioUnlocked) return;
+  voiceAudioEl = new Audio();
+  voiceAudioEl.setAttribute('playsinline', '');
+  // Unlock with a tiny silent WAV (44 bytes = valid empty WAV)
+  var silentWav = new Uint8Array([
+    0x52,0x49,0x46,0x46, 0x24,0x00,0x00,0x00, 0x57,0x41,0x56,0x45,
+    0x66,0x6D,0x74,0x20, 0x10,0x00,0x00,0x00, 0x01,0x00,0x01,0x00,
+    0x80,0x3E,0x00,0x00, 0x00,0x7D,0x00,0x00, 0x02,0x00,0x10,0x00,
+    0x64,0x61,0x74,0x61, 0x00,0x00,0x00,0x00,
+  ]);
+  var blob = new Blob([silentWav], { type: 'audio/wav' });
+  voiceAudioEl.src = URL.createObjectURL(blob);
+  voiceAudioEl.play().then(function() { voiceAudioEl.pause(); }).catch(function() {});
+  voiceAudioUnlocked = true;
+}
+
+// Thinking sound — loops while LLM is processing
+var voiceThinkingAudio = null;
+function voiceStartThinking() {
+  voiceStopThinking();
+  voiceThinkingAudio = new Audio('/api/thinking.mp3');
+  voiceThinkingAudio.loop = true;
+  voiceThinkingAudio.volume = 0.3;
+  voiceThinkingAudio.play().catch(function() {});
+}
+function voiceStopThinking() {
+  if (voiceThinkingAudio) {
+    voiceThinkingAudio.pause();
+    voiceThinkingAudio = null;
+  }
+}
+
+// Pause mic analyser while playing to avoid hardware conflicts on mobile
+function voicePauseMic() {
+  if (voiceAudioCtx && voiceAudioCtx.state === 'running') {
+    voiceAudioCtx.suspend().catch(function() {});
+  }
+}
+function voiceResumeMic() {
+  if (voiceAudioCtx && voiceAudioCtx.state === 'suspended') {
+    voiceAudioCtx.resume().catch(function() {});
+  }
+}
+
+// Play WAV using Blob URL (not data URL) on the reused Audio element
+function voicePlayWav(base64) {
+  // Decode base64 → Blob → Blob URL (avoids mobile data URL size limits)
+  var raw = atob(base64);
+  var bytes = new Uint8Array(raw.length);
+  for (var i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  var blob = new Blob([bytes], { type: 'audio/wav' });
+
+  if (voiceLastBlobUrl) URL.revokeObjectURL(voiceLastBlobUrl);
+  voiceLastBlobUrl = URL.createObjectURL(blob);
+
+  voicePauseMic();
+
+  // Reuse the unlocked Audio element (critical for mobile Safari)
+  voiceAudioEl.src = voiceLastBlobUrl;
+  voiceAudioEl.currentTime = 0;
+
+  return voiceAudioEl.play().then(function() {
+    return new Promise(function(resolve) {
+      voiceAudioEl.onended = function() {
+        voiceResumeMic();
+        resolve();
+      };
+      voiceAudioEl.onerror = function() {
+        voiceResumeMic();
+        resolve();
+      };
+    });
+  }).catch(function() {
+    voiceResumeMic();
+  });
+}
+
+// --- VAD: voice activity detection via AnalyserNode ---
+function voiceGetRMS() {
+  if (!voiceAnalyser) return 0;
+  var buf = new Float32Array(voiceAnalyser.fftSize);
+  voiceAnalyser.getFloatTimeDomainData(buf);
+  var sum = 0;
+  for (var i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+  return Math.sqrt(sum / buf.length);
+}
+
+// --- Start continuous conversation ---
+async function voiceStartConversation() {
+  if (voiceActive) return;
+  voiceUnlockAudio();
+
+  var deviceId = voiceMicSelect.value;
+  var constraints = { audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } };
+  if (deviceId) constraints.audio.deviceId = { exact: deviceId };
+  try {
+    voiceStream = await navigator.mediaDevices.getUserMedia(constraints);
+  } catch (e) {
+    voiceSetStatus('Microphone access denied');
+    return;
+  }
+
+  voiceActive = true;
+  voiceTalkBtn.textContent = 'Listening...';
+  voiceTalkBtn.classList.add('recording');
+  voiceTalkBtn.disabled = true;
+  voiceStopBtn.disabled = false;
+
+  // Set up audio analysis for VAD
+  voiceAudioCtx = new AudioContext();
+  var source = voiceAudioCtx.createMediaStreamSource(voiceStream);
+  voiceAnalyser = voiceAudioCtx.createAnalyser();
+  voiceAnalyser.fftSize = 2048;
+  source.connect(voiceAnalyser);
+
+  voiceSetStatus('Listening — speak anytime...');
+  voiceStartListening();
+}
+
+// --- Listen for speech, detect silence, send ---
+function voiceStartListening() {
+  if (!voiceActive) return;
+  voiceListening = true;
+  voiceTalkBtn.textContent = 'Listening...';
+  voiceTalkBtn.classList.add('recording');
+  voiceTalkBtn.classList.remove('processing');
+  voiceSetStatus('Listening — speak anytime...');
+
+  // Start recording in background
+  voiceChunks = [];
+  voiceRecorder = new MediaRecorder(voiceStream);
+  voiceRecorder.ondataavailable = function(e) { voiceChunks.push(e.data); };
+  voiceRecorder.start();
+
+  var speechStarted = false;
+  var speechStartTime = 0;
+  var silenceStart = 0;
+  var silenceThresholdMs = parseInt(document.getElementById('voice-silence').value) || 1500;
+
+  // Poll RMS level to detect speech/silence
+  voiceVadTimer = setInterval(function() {
+    if (!voiceActive || !voiceListening) { clearInterval(voiceVadTimer); return; }
+
+    var rms = voiceGetRMS();
+
+    if (rms > VOICE_THRESHOLD) {
+      // Speech detected
+      if (!speechStarted) {
+        speechStarted = true;
+        speechStartTime = Date.now();
+        voiceSetStatus('Hearing you...');
+      }
+      silenceStart = 0;
+    } else if (speechStarted) {
+      // Silence after speech
+      if (silenceStart === 0) {
+        silenceStart = Date.now();
+      } else if (Date.now() - silenceStart > silenceThresholdMs) {
+        // Enough silence — check we had meaningful speech
+        if (Date.now() - speechStartTime > VOICE_MIN_SPEECH_MS) {
+          clearInterval(voiceVadTimer);
+          voiceListening = false;
+          voiceProcessRecording();
+        } else {
+          // Too short, reset
+          speechStarted = false;
+          silenceStart = 0;
+        }
+      }
+    }
+  }, 50);
+}
+
+// --- Process the recording: stop recorder, send to server, play response, resume ---
+async function voiceProcessRecording() {
+  voiceTalkBtn.textContent = 'Processing...';
+  voiceTalkBtn.classList.remove('recording');
+  voiceTalkBtn.classList.add('processing');
+
+  // Stop recorder and collect blob
+  var blob = await new Promise(function(resolve) {
+    voiceRecorder.onstop = function() {
+      resolve(new Blob(voiceChunks, { type: voiceRecorder.mimeType }));
+    };
+    voiceRecorder.stop();
+  });
+  voiceRecorder = null;
+
+  if (blob.size === 0 || !voiceActive) { voiceStartListening(); return; }
+  progress('voice-progress', true);
+
+  try {
+    var pcm = await blobToPcm16k(blob);
+    if (!pcm) { voiceStartListening(); progress('voice-progress', false); return; }
+
+    var language = document.getElementById('voice-lang').value;
+    var response = await fetch('/api/voice', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ audio: arrayBufToBase64(pcm.buffer), language: language, voice: document.getElementById('voice-voice').value }),
+    });
+
+    var reader = response.body.getReader();
+    var decoder = new TextDecoder();
+    var sseBuffer = '';
+    var llmText = '';
+    var llmDone = false;
+
+    while (true) {
+      var chunk = await reader.read();
+      if (chunk.done) break;
+      sseBuffer += decoder.decode(chunk.value, { stream: true });
+      var lines = sseBuffer.split('\\n');
+      sseBuffer = lines.pop();
+      for (var line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          var data = JSON.parse(line.slice(6));
+          if (data.type === 'stt') {
+            voiceAppendLog('voice-user', 'You: ' + data.text);
+            voiceStartThinking();
+          } else if (data.type === 'llm' && !llmDone) {
+            llmText += (data.content || '');
+            if (data.done) { llmDone = true; voiceAppendLog('voice-assistant', 'AI: ' + llmText); }
+          } else if (data.type === 'audio' && data.wav) {
+            voiceStopThinking();
+            voiceSetStatus('Speaking...');
+            await voicePlayWav(data.wav);
+          } else if (data.type === 'status') {
+            voiceSetStatus(data.text);
+          } else if (data.type === 'error') {
+            voiceStopThinking();
+            voiceSetStatus('Error: ' + data.message);
+          }
+        } catch (e) {}
+      }
+    }
+  } catch (e) {
+    voiceSetStatus('Error: ' + e.message);
+  }
+
+  progress('voice-progress', false);
+
+  // Resume listening if conversation is still active
+  if (voiceActive) {
+    voiceStartListening();
+  }
+}
+
+// --- Stop conversation ---
+function voiceEndConversation() {
+  voiceActive = false;
+  voiceListening = false;
+  if (voiceVadTimer) { clearInterval(voiceVadTimer); voiceVadTimer = null; }
+  if (voiceRecorder && voiceRecorder.state !== 'inactive') {
+    try { voiceRecorder.stop(); } catch (e) {}
+  }
+  voiceRecorder = null;
+  if (voiceStream) {
+    voiceStream.getTracks().forEach(function(t) { t.stop(); });
+    voiceStream = null;
+  }
+  if (voiceAudioCtx) {
+    voiceAudioCtx.close().catch(function() {});
+    voiceAudioCtx = null;
+    voiceAnalyser = null;
+  }
+  if (voiceAudioEl) { voiceAudioEl.pause(); voiceAudioEl.src = ''; voiceAudioEl = null; }
+  if (voiceLastBlobUrl) { URL.revokeObjectURL(voiceLastBlobUrl); voiceLastBlobUrl = null; }
+  voiceStopThinking();
+  try { fetch('/api/voice/abort', { method: 'POST' }); } catch (e) {}
+
+  voiceTalkBtn.disabled = false;
+  voiceTalkBtn.textContent = 'Start Conversation';
+  voiceTalkBtn.classList.remove('recording', 'processing');
+  voiceStopBtn.disabled = true;
+  voiceSetStatus('Conversation ended');
+}
+
+voiceTalkBtn.addEventListener('click', function() {
+  voiceUnlockAudio();
+  voiceStartConversation();
+});
+
+voiceStopBtn.addEventListener('click', function() {
+  voiceEndConversation();
+});
+
+// --- Voice selector: populate from /api/voices and play demo on change ---
+var voiceSelectEl = document.getElementById('voice-voice');
+var voicesLoaded = false;
+
+async function voiceLoadVoices() {
+  if (voicesLoaded) return;
+  try {
+    var res = await fetch('/api/voices');
+    var data = await res.json();
+    if (data.voices && data.voices.length > 0) {
+      voiceSelectEl.innerHTML = '';
+      data.voices.forEach(function(v) {
+        var opt = document.createElement('option');
+        opt.value = v;
+        opt.textContent = v;
+        if (v === 'af_heart') opt.selected = true;
+        voiceSelectEl.appendChild(opt);
+      });
+      voicesLoaded = true;
+    }
+  } catch (e) {}
+}
+
+var voicePreviewAbort = null;
+voiceSelectEl.addEventListener('change', async function() {
+  var voice = voiceSelectEl.value;
+  if (!voice) return;
+  voiceUnlockAudio();
+
+  // Abort any in-flight preview
+  if (voicePreviewAbort) voicePreviewAbort.abort();
+  var abort = voicePreviewAbort = new AbortController();
+
+  // Stop current playback cleanly
+  voiceAudioEl.pause();
+  voiceAudioEl.removeAttribute('src');
+  voiceAudioEl.onended = null;
+  voiceAudioEl.onerror = null;
+
+  voiceSetStatus('Previewing ' + voice + '...');
+  try {
+    var res = await fetch('/api/tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: 'Hi there, this is ' + voice.replace(/^[a-z]{1,2}_/, '').replace(/_/g, ' ') + '.', voice: voice }),
+      signal: abort.signal,
+    });
+    if (!res.ok) throw new Error('TTS failed');
+    if (abort.signal.aborted) return;
+    var blob = await res.blob();
+    if (abort.signal.aborted) return;
+
+    if (voiceLastBlobUrl) URL.revokeObjectURL(voiceLastBlobUrl);
+    voiceLastBlobUrl = URL.createObjectURL(blob);
+    voiceAudioEl.src = voiceLastBlobUrl;
+    await voiceAudioEl.play();
+    voiceSetStatus('Voice: ' + voice);
+  } catch (e) {
+    if (e.name !== 'AbortError') voiceSetStatus('Preview failed: ' + e.message);
+  }
+});
+
+var voiceMicsLoaded = false;
+document.querySelectorAll('.tab').forEach(function(tab) {
+  if (tab.dataset.panel === 'voice') {
+    tab.addEventListener('click', function() {
+      if (!voiceMicsLoaded) { voiceEnumerateMics(); voiceMicsLoaded = true; }
+      voiceLoadVoices();
+    });
+  }
+});
+
 function escHtml(s) {
   const d = document.createElement('div');
   d.textContent = s;
@@ -1661,7 +2337,7 @@ function modelName(path) {
 
 function renderModels(models) {
   const grid = document.getElementById('models-grid');
-  const types = ['llm', 'stt', 'tts', 'image', 'video'];
+  const types = ['llm', 'stt', 'kokoro', 'tts', 'image', 'video'];
   let html = '';
 
   for (const t of types) {

@@ -1,25 +1,31 @@
 # node-omni-orcha
 
-Unified native Node.js inference engine — **LLM**, **Image/Video Generation**, **Speech-to-Text**, and **Text-to-Speech** in a single `omni.node` binary.
+Unified native Node.js inference engine — **LLM**, **Vision**, **Image/Video Generation**, **Speech-to-Text**, and **Text-to-Speech** in a single `omni.node` binary.
 
-Built on a [llama.cpp](https://github.com/ggml-org/llama.cpp) fork with [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp), [whisper.cpp](https://github.com/ggml-org/whisper.cpp), and [qwen3-tts.cpp](https://github.com/predict-woo/qwen3-tts.cpp) compiled against a shared ggml backend.
+Built on a [llama.cpp](https://github.com/ggml-org/llama.cpp) fork with [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp), [whisper.cpp](https://github.com/ggml-org/whisper.cpp), [qwen3-tts.cpp](https://github.com/predict-woo/qwen3-tts.cpp), and [Kokoro-82M](https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX) compiled against a shared ggml backend.
 
 ## Features
 
 - **LLM** — Chat completion, streaming, embeddings, tool calling, reasoning budget control
+- **Vision** — Multimodal LLM with image input (Qwen2-VL, Qwen3-VL, LLaVA, Gemma3, etc.)
 - **Image Generation** — FLUX 2, Wan 2.2, SD/SDXL (text-to-image)
-- **Video Generation** — Wan 2.2 (text-to-video)
+- **Video Generation** — Wan 2.2 (text-to-video, image-to-video)
 - **Speech-to-Text** — Whisper (language detection, timestamps)
-- **Text-to-Speech** — Qwen3-TTS with voice cloning from 3s reference audio
+- **Text-to-Speech** — Kokoro (49 preset voices, ~600-900ms) + Qwen3-TTS (voice cloning)
 - **GPU accelerated** — Metal (macOS), CUDA (NVIDIA), CPU fallback
 - **Single binary** — One `omni.node` for all engines, one shared ggml, no symbol conflicts
 - **Native N-API** — In-process inference, no child processes or HTTP servers
 - **Node 25** — Native TypeScript, ESM, no build step
+- **Web UI** — Built-in server with chat, voice conversation, TTS, image/video generation (for testing only)
 
 ## Quick Start
 
 ```bash
 npm install node-omni-orcha
+
+# Optional: Kokoro TTS (fast, 49 voices — only needs ONNX Runtime)
+bash scripts/download-onnxruntime.sh
+
 npm run build:metal   # macOS
 npm run build:cuda    # NVIDIA
 npm run build:cpu     # CPU only
@@ -68,6 +74,24 @@ const result = await llm.complete(messages, {
 })
 ```
 
+### Vision LLM
+
+```ts
+const vlm = await loadModel('qwen2-vl-2b.gguf', {
+  type: 'llm', contextSize: 4096, mmprojPath: 'mmproj.gguf'
+})
+
+const result = await vlm.complete([{
+  role: 'user',
+  content: [
+    { type: 'image', data: pngBuffer },            // Buffer, or { path: 'photo.jpg' }
+    { type: 'text', text: 'Describe this image.' },
+  ],
+}])
+```
+
+Supported architectures: Qwen2-VL, Qwen3-VL, LLaVA, Gemma3, CogVLM, Chameleon, MiniCPM, InternVL, etc.
+
 ### Image Generation (FLUX 2)
 
 ```ts
@@ -110,7 +134,23 @@ const lang = await stt.detectLanguage(pcmBuffer)
 
 Audio format: **16-bit PCM, 16kHz, mono**.
 
-### Text-to-Speech with Voice Cloning (Qwen3-TTS)
+### Kokoro TTS (fast, preset voices)
+
+```ts
+const kokoro = await loadModel('/path/to/kokoro/', { type: 'kokoro' })
+
+const wav = await kokoro.speak('Hello world!', { voice: 'af_heart', speed: 1.0 })
+fs.writeFileSync('output.wav', wav)
+
+const voices = kokoro.listVoices()
+// ['af_alloy', 'af_bella', 'af_heart', 'am_adam', 'bf_emma', 'bm_george', ...]
+```
+
+49 preset voices, ~600-900ms per sentence. Voice naming: `af_` = American Female, `am_` = American Male, `bf_` = British Female, `bm_` = British Male, etc.
+
+Requires ONNX Runtime at build time (`bash scripts/download-onnxruntime.sh`). No other external dependencies — phonemization uses an embedded CMU dictionary (126K English words).
+
+### Qwen3-TTS (voice cloning)
 
 ```ts
 const tts = createModel('/path/to/qwen3-tts-models/', 'tts')
@@ -135,6 +175,23 @@ const meta = await readGGUFMetadata('model.gguf')
 // { architecture, contextLength, blockCount, embeddingLength, ... }
 ```
 
+## Web Server
+
+```bash
+npm run serve    # http://localhost:3333
+```
+
+Built-in web UI with tabs for Chat, STT, TTS, Image, Video, and Voice conversation. Models load on-demand when you click a tab.
+
+**Voice conversation**: continuous mode with voice activity detection — click "Start Conversation", speak naturally, pauses are auto-detected, responses are spoken back with Kokoro TTS. Supports rolling conversation history (20 turns).
+
+HTTPS support for mobile testing (microphone requires secure context):
+```bash
+mkdir -p certs
+openssl req -x509 -newkey rsa:2048 -keyout certs/key.pem -out certs/cert.pem -days 365 -nodes -subj "/CN=localhost"
+npm run serve    # auto-detects certs → https://localhost:3333
+```
+
 ## Architecture
 
 All engines compile against a **single shared ggml** (tensor library + GPU backends) and link into one N-API addon:
@@ -145,6 +202,8 @@ engine/
   src/         ← llama.cpp LLM core
   stt/         ← whisper.cpp (compiled against shared ggml)
   tts/         ← qwen3-tts.cpp (compiled against shared ggml)
+  kokoro/      ← Kokoro-82M TTS (ONNX Runtime, no external deps)
+  mtmd/        ← multimodal/vision (CLIP encoder, compiled against shared ggml)
   diffusion/   ← stable-diffusion.cpp (compiled against shared ggml)
 
 → build/Release/omni.node (single output, ~10-30MB depending on platform)
@@ -152,7 +211,7 @@ engine/
 
 ### Why not node-llama-cpp?
 
-[node-llama-cpp](https://github.com/withcatai/node-llama-cpp) is a well-maintained binding — if you only need LLM inference, use it. This project exists because we need four engines (LLM, STT, TTS, Image/Video) sharing **one ggml build** in **one process**:
+[node-llama-cpp](https://github.com/withcatai/node-llama-cpp) is a well-maintained binding — if you only need LLM inference, use it. This project exists because we need five engines (LLM, STT, TTS, Vision, Image/Video) sharing **one ggml build** in **one process**:
 
 - **No symbol conflicts** — llama.cpp, whisper.cpp, stable-diffusion.cpp, and qwen3-tts.cpp all depend on ggml. Separate binaries mean duplicate symbols and linker errors. One unified build solves this.
 - **One GPU backend** — Metal/CUDA is initialized once and shared across all engines. Separate bindings would compete for VRAM and require independent backend negotiation.
@@ -162,6 +221,10 @@ engine/
 
 ```bash
 npm install
+
+# Optional: Kokoro TTS support
+bash scripts/download-onnxruntime.sh   # downloads pre-built ONNX Runtime (~50MB)
+
 npm run build          # auto-detect GPU
 npm run build:metal    # macOS Metal
 npm run build:cuda     # NVIDIA CUDA
@@ -176,10 +239,18 @@ npm test
 
 # Download test models
 bash scripts/download-test-models.sh              # LLM + STT (~745MB)
+bash scripts/download-test-models.sh --kokoro      # + Kokoro TTS (~190MB)
+bash scripts/download-test-models.sh --tts         # + Qwen3-TTS (~1.2GB)
+bash scripts/download-test-models.sh --image       # + FLUX 2 Klein (~5GB)
+bash scripts/download-test-models.sh --video       # + Wan 2.2 5B (~5GB)
+bash scripts/download-test-models.sh --vision      # + Qwen2-VL 2B (~1.8GB)
+bash scripts/download-test-models.sh --all         # Everything
 
 # Integration tests (requires models in ~/.orcha/workspace/.models/)
-node scripts/full-integration-test.ts
-node scripts/samuel-jackson-test.ts
+node scripts/kokoro-test.ts                        # Kokoro TTS benchmark + STT roundtrip
+node scripts/full-integration-test.ts              # All engines
+node scripts/samuel-jackson-test.ts                # LLM + TTS + STT + Image
+node scripts/vision-integration-test.ts            # Vision/Multimodal
 ```
 
 ## Platforms
@@ -199,7 +270,7 @@ node scripts/samuel-jackson-test.ts
 - **CMake** >= 3.15
 - **C++17** compiler (Clang, GCC, MSVC)
 - **macOS**: Xcode Command Line Tools (for Metal)
-- **Linux/Windows**: CUDA Toolkit 12.6+ (for NVIDIA GPU support)
+- **Linux/Windows**: CUDA Toolkit 13.1+ (for NVIDIA GPU support)
 
 ## License
 

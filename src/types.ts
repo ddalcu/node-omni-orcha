@@ -4,6 +4,7 @@ export const MODEL_TYPES = {
   image: 'image',
   stt: 'stt',
   tts: 'tts',
+  kokoro: 'kokoro',
 } as const;
 
 export type ModelType = (typeof MODEL_TYPES)[keyof typeof MODEL_TYPES];
@@ -328,11 +329,44 @@ export interface TtsModel {
   getStatus(): TtsModelStatus;
 }
 
+// --- Kokoro TTS Types ---
+
+export interface KokoroLoadOptions {
+  /** Use GPU (CoreML on macOS) for inference. Default: true on GPU builds. */
+  useGpu?: boolean;
+}
+
+export interface KokoroSpeakOptions {
+  /** Voice preset name (e.g. "af_heart", "am_adam"). Default: "af_heart". */
+  voice?: string;
+  /** Speech rate. 1.0 = normal, < 1 slower, > 1 faster. Default: 1.0. */
+  speed?: number;
+}
+
+export interface KokoroModel {
+  readonly type: 'kokoro';
+  readonly modelPath: string;
+  readonly loaded: boolean;
+  readonly loading: boolean;
+  readonly busy: boolean;
+
+  load(options?: KokoroLoadOptions): Promise<void>;
+  speak(text: string, options?: KokoroSpeakOptions): Promise<Buffer>;
+  listVoices(): string[];
+  unload(): Promise<void>;
+  getStatus(): KokoroModelStatus;
+}
+
+export interface KokoroModelStatus extends ModelStatus {
+  type: 'kokoro';
+  voices: string[];
+}
+
 // Union
-export type Model = LlmModel | ImageModel | SttModel | TtsModel;
+export type Model = LlmModel | ImageModel | SttModel | TtsModel | KokoroModel;
 
 // Load options with type hint
-export type LoadModelOptions = (LlmLoadOptions | ImageLoadOptions | SttLoadOptions | TtsLoadOptions) & { type?: ModelType };
+export type LoadModelOptions = (LlmLoadOptions | ImageLoadOptions | SttLoadOptions | TtsLoadOptions | KokoroLoadOptions) & { type?: ModelType };
 
 // --- Status Types ---
 

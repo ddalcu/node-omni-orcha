@@ -16,6 +16,12 @@ test/fixtures/*.mp3
 # Integration test output
 test-output/
 
+# Downloaded dependencies (ONNX Runtime pre-built binaries)
+engine/vendor/onnxruntime/
+
+# SSL certs
+certs/
+
 # Python (used by model conversion scripts)
 .venv/
 __pycache__/

@@ -345,13 +345,15 @@ static bool is_vowel_token(int64_t t) {
     // ASCII vowels used in IPA diphthongs: a(43) e(47) i(51) o(57) u(63)
     // IPA vowels: ɑ(69) ɐ(70) ɒ(71) æ(72) ɔ(76) ə(83) ɘ(84) ɚ(85) ɛ(86)
     //   ɜ(87) ɝ(88) ɞ(89) ɨ(101) ɪ(102) ʉ(134) ʊ(135) ʌ(138) ɤ(140) ʏ(144)
-    static const bool tbl[180] = {
-        [43]=1, [47]=1, [51]=1, [57]=1, [63]=1,           // a e i o u
-        [69]=1, [70]=1, [71]=1, [72]=1, [76]=1,           // ɑ ɐ ɒ æ ɔ
-        [83]=1, [84]=1, [85]=1, [86]=1, [87]=1, [88]=1, [89]=1, // ə ɘ ɚ ɛ ɜ ɝ ɞ
-        [101]=1, [102]=1, [134]=1, [135]=1, [138]=1, [140]=1, [144]=1,
-    };
-    return t >= 0 && t < 180 && tbl[t];
+    switch (t) {
+        case 43: case 47: case 51: case 57: case 63:       // a e i o u
+        case 69: case 70: case 71: case 72: case 76:       // ɑ ɐ ɒ æ ɔ
+        case 83: case 84: case 85: case 86: case 87: case 88: case 89: // ə ɘ ɚ ɛ ɜ ɝ ɞ
+        case 101: case 102: case 134: case 135: case 138: case 140: case 144:
+            return true;
+        default:
+            return false;
+    }
 }
 
 static bool is_modifier_token(int64_t t) {

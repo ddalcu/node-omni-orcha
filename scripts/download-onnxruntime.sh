@@ -48,9 +48,19 @@ case "$OS" in
 esac
 
 # Use CUDA variant if GPU_BACKEND=cuda (set by CI or user)
+# Exception: Windows — the GPU variant adds onnxruntime_providers_cuda.dll (322MB)
+# which pushes the npm package over the 200MB limit. Kokoro (82M params) runs fine
+# on CPU; the heavy CUDA work (LLM/STT/image) goes through ggml, not ONNX Runtime.
 GPU_SUFFIX=""
 if [ "${GPU_BACKEND}" = "cuda" ] && [ "$OS" != "Darwin" ]; then
-  GPU_SUFFIX="-gpu"
+  case "$OS" in
+    MINGW*|MSYS*|CYGWIN*)
+      echo "Skipping ONNX Runtime GPU variant on Windows (CPU-only for Kokoro TTS)"
+      ;;
+    *)
+      GPU_SUFFIX="-gpu"
+      ;;
+  esac
 fi
 
 ARCHIVE="onnxruntime-${PLATFORM}${GPU_SUFFIX}-${ORT_VERSION}.${EXT}"

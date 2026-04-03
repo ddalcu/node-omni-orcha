@@ -12,6 +12,63 @@ import type {
   GGUFModelInfo,
 } from '../types.ts';
 
+// ─── Stream token sanitizer ───
+// Some models (Gemma 4) emit special tokens in streaming that span multiple chunks.
+// This state machine suppresses tool call blocks and channel markers from stream output.
+// The actual tool calls are parsed post-generation and delivered in the final done chunk.
+
+class StreamSanitizer {
+  private inToolCall = false;
+  private inChannel = false;
+
+  /** Process a text chunk — returns the cleaned text to emit (may be empty). */
+  process(text: string): string {
+    // Strip standalone single-token markers
+    let out = text.replaceAll('<|"|>', '');
+
+    let result = '';
+    for (const ch of out) {
+      if (this.inToolCall) {
+        // Suppress everything until we see the closing marker
+        // <tool_call|> arrives as a single token, so check after accumulation
+        if (out.includes('<tool_call|>')) {
+          this.inToolCall = false;
+          return ''; // entire chunk is part of tool call block
+        }
+        return ''; // still inside tool call, suppress
+      }
+      if (this.inChannel) {
+        if (ch === '\n') {
+          this.inChannel = false;
+          continue; // swallow the newline that ends the channel marker
+        }
+        continue; // suppress channel marker content
+      }
+      result += ch;
+    }
+
+    // Check for markers that START in this chunk
+    if (result.includes('<|tool_call>')) {
+      this.inToolCall = true;
+      // Return anything before the marker
+      return result.slice(0, result.indexOf('<|tool_call>'));
+    }
+    if (result.includes('<|channel>')) {
+      this.inChannel = true;
+      return result.slice(0, result.indexOf('<|channel>'));
+    }
+
+    return result;
+  }
+
+  /** Flush any remaining state — call before the final done chunk. */
+  flush(): string {
+    this.inToolCall = false;
+    this.inChannel = false;
+    return '';
+  }
+}
+
 /**
  * Creates an LlmModel instance for the given GGUF file.
  * The model is NOT loaded into memory — call load() first.
@@ -217,6 +274,9 @@ export function createLlmModel(modelPath: string): LlmModel {
         if (notify) { notify(); notify = null; }
       });
 
+      const contentSanitizer = new StreamSanitizer();
+      const reasoningSanitizer = new StreamSanitizer();
+
       try {
         while (!streamDone) {
           if (pending.length === 0) {
@@ -225,8 +285,26 @@ export function createLlmModel(modelPath: string): LlmModel {
           if (streamError) throw streamError;
           while (pending.length > 0) {
             const chunk = pending.shift()!;
-            yield chunk;
-            if (chunk.done) { streamDone = true; break; }
+
+            if (chunk.done) {
+              contentSanitizer.flush();
+              reasoningSanitizer.flush();
+              yield chunk;
+              streamDone = true;
+              break;
+            }
+
+            // Sanitize content and reasoning streams to strip model-specific special tokens
+            if (chunk.content) {
+              const clean = contentSanitizer.process(chunk.content);
+              if (clean) yield { content: clean, done: false } as StreamChunk;
+            } else if (chunk.reasoning) {
+              const clean = reasoningSanitizer.process(chunk.reasoning);
+              if (clean) yield { reasoning: clean, done: false } as StreamChunk;
+            } else {
+              yield chunk;
+            }
+
             if (options?.signal?.aborted) {
               (nativeCtx.abort as Function)?.();
               streamDone = true;

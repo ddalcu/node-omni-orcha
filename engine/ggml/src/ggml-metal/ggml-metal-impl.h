@@ -120,6 +120,10 @@
 #define OP_UNARY_NUM_EXP         114
 #define OP_UNARY_NUM_SOFTPLUS    115
 #define OP_UNARY_NUM_EXPM1       116
+#define OP_UNARY_NUM_FLOOR       117
+#define OP_UNARY_NUM_CEIL        118
+#define OP_UNARY_NUM_ROUND       119
+#define OP_UNARY_NUM_TRUNC       120
 
 #define OP_SUM_ROWS_NUM_SUM_ROWS 10
 #define OP_SUM_ROWS_NUM_MEAN     11
@@ -644,13 +648,15 @@ typedef struct {
 } ggml_metal_kargs_im2col;
 
 typedef struct {
-    int64_t  stride_q; // element stride for (N*IC) dim: nb13 / element_size
-    int64_t  stride_z; // element stride for ID dim: nb12 / element_size
-    int64_t  stride_y; // element stride for IH dim: nb11 / element_size
     int32_t  IW;
     int32_t  IH;
     int32_t  ID;
-    int32_t  IC;
+    int32_t  OW;
+    int32_t  OH;
+    int32_t  OD;
+    int32_t  KW;
+    int32_t  KH;
+    int32_t  KD;
     int32_t  s0;
     int32_t  s1;
     int32_t  s2;
@@ -660,15 +666,22 @@ typedef struct {
     int32_t  d0;
     int32_t  d1;
     int32_t  d2;
+    int32_t  IC;
     int32_t  N;
-    int32_t  KW;
-    int32_t  KH;
-    int32_t  KD;
-    int32_t  OW;
-    int32_t  OH;
-    int32_t  OD;
-    int32_t  IC_KD_KH_KW;
-} ggml_metal_kargs_im2col_3d;
+    int32_t  OC;
+    uint64_t nb00;
+    uint64_t nb01;
+    uint64_t nb02;
+    uint64_t nb03;
+    uint64_t nb10;
+    uint64_t nb11;
+    uint64_t nb12;
+    uint64_t nb13;
+    uint64_t nb0;
+    uint64_t nb1;
+    uint64_t nb2;
+    uint64_t nb3;
+} ggml_metal_kargs_conv_3d;
 
 typedef struct{
     int32_t  ne00;
@@ -977,10 +990,6 @@ typedef struct {
     uint64_t nb1;
     uint64_t nb2;
     uint64_t nb3;
-    int32_t  p0_before;
-    int32_t  p1_before;
-    int32_t  p2_before;
-    int32_t  p3_before;
 } ggml_metal_kargs_pad;
 
 typedef struct {

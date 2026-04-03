@@ -1,0 +1,125 @@
+commit b5cdd21308a1894d816f8024b6672f5fb1df5e3a
+Author: David Dalcu <david.dalcu@gmail.com>
+Date:   Fri Mar 27 00:23:58 2026 -0400
+
+    Fast iteration compile for non release builds, default embeddings to CPU on CUDA to avoid OOM, proper error handling
+
+diff --git a/engine/ggml/src/ggml-cuda/ggml-cuda.cu b/engine/ggml/src/ggml-cuda/ggml-cuda.cu
+index e8ccdc7..f3db2f9 100644
+--- a/engine/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/engine/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -2,6 +2,8 @@
+ #include "ggml-impl.h"
+ #include "ggml-backend-impl.h"
+ 
++#include <stdexcept>
++
+ #include "ggml-cuda/common.cuh"
+ #include "ggml-cuda/acc.cuh"
+ #include "ggml-cuda/add-id.cuh"
+@@ -91,11 +93,13 @@ void ggml_cuda_error(const char * stmt, const char * func, const char * file, in
+     int id = -1; // in case cudaGetDevice fails
+     (void)cudaGetDevice(&id);
+ 
+-    GGML_LOG_ERROR(GGML_CUDA_NAME " error: %s\n", msg);
+-    GGML_LOG_ERROR("  current device: %d, in function %s at %s:%d\n", id, func, file, line);
+-    GGML_LOG_ERROR("  %s\n", stmt);
+-    // abort with GGML_ABORT to get a stack trace
+-    GGML_ABORT(GGML_CUDA_NAME " error");
++    char buf[1024];
++    snprintf(buf, sizeof(buf),
++        GGML_CUDA_NAME " error: %s\n  current device: %d, in function %s at %s:%d\n  %s",
++        msg, id, func, file, line, stmt);
++    GGML_LOG_ERROR("%s\n", buf);
++    // Throw instead of abort so N-API callers can catch OOM and retry with fewer GPU layers.
++    throw std::runtime_error(buf);
+ }
+ 
+ // this is faster on Windows
+
+commit 5a6b734bc10e68782d078a71e54f0ff39a98ac0f
+Author: ddalcu <david.dalcu@gmail.com>
+Date:   Thu Mar 26 11:55:09 2026 -0400
+
+    mem problems with cuda embeddings
+
+diff --git a/engine/ggml/src/ggml-cuda/ggml-cuda.cu b/engine/ggml/src/ggml-cuda/ggml-cuda.cu
+index a31e843..e8ccdc7 100644
+--- a/engine/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/engine/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -435,9 +435,8 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
+ // pool with virtual memory
+ #if defined(GGML_USE_VMM)
+ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
+-    static const size_t CUDA_POOL_VMM_MAX_SIZE = 1ull << 35; // 32 GB
+-
+     int device;
++    size_t pool_vmm_max_size;
+     CUdeviceptr pool_addr = 0;
+     size_t pool_used = 0;
+     size_t pool_size = 0;
+@@ -449,6 +448,10 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
+     explicit ggml_cuda_pool_vmm(int device) :
+         device(device),
+         granularity(ggml_cuda_info().devices[device].vmm_granularity) {
++        // Cap VMM virtual address reservation to 2x device VRAM (min 1 GB)
++        // Reserving 32 GB on 8 GB cards can fail on Windows CUDA drivers
++        size_t vram = ggml_cuda_info().devices[device].total_vram;
++        pool_vmm_max_size = vram > 0 ? std::max(vram * 2, (size_t)(1ull << 30)) : (1ull << 35);
+     }
+ 
+     ~ggml_cuda_pool_vmm() {
+@@ -461,7 +464,7 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
+ #else
+             CU_CHECK(cuMemUnmap(pool_addr, pool_size));
+ #endif
+-            CU_CHECK(cuMemAddressFree(pool_addr, CUDA_POOL_VMM_MAX_SIZE));
++            CU_CHECK(cuMemAddressFree(pool_addr, pool_vmm_max_size));
+         }
+     }
+ 
+@@ -477,7 +480,7 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
+             size_t reserve_size = size - avail;
+             reserve_size = granularity * ((reserve_size + granularity - 1) / granularity);
+ 
+-            GGML_ASSERT(pool_size + reserve_size <= CUDA_POOL_VMM_MAX_SIZE);
++            GGML_ASSERT(pool_size + reserve_size <= pool_vmm_max_size);
+ 
+             // allocate more physical memory
+             CUmemAllocationProp prop = {};
+@@ -489,7 +492,7 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
+ 
+             // reserve virtual address space (if not already reserved)
+             if (pool_addr == 0) {
+-                CU_CHECK(cuMemAddressReserve(&pool_addr, CUDA_POOL_VMM_MAX_SIZE, 0, 0, 0));
++                CU_CHECK(cuMemAddressReserve(&pool_addr, pool_vmm_max_size, 0, 0, 0));
+             }
+ 
+             // map at the end of the pool
+
+commit c0e8b058f9c78dae408b46b9ee8ea2eb7c24756a
+Author: David Dalcu <david.dalcu@gmail.com>
+Date:   Wed Mar 25 09:39:47 2026 -0400
+
+    Few fixes after testing in agent-orcha
+
+diff --git a/engine/ggml/src/ggml-metal/ggml-metal-device.m b/engine/ggml/src/ggml-metal/ggml-metal-device.m
+index 8188c79..8ac414f 100644
+--- a/engine/ggml/src/ggml-metal/ggml-metal-device.m
++++ b/engine/ggml/src/ggml-metal/ggml-metal-device.m
+@@ -608,8 +608,13 @@ void ggml_metal_rsets_free(ggml_metal_rsets_t rsets) {
+         return;
+     }
+ 
+-    // note: if you hit this assert, most likely you haven't deallocated all Metal resources before exiting
+-    GGML_ASSERT([rsets->data count] == 0);
++    // Gracefully handle leftover residency sets during process exit
++    // (e.g. Node.js --watch restart or unclean shutdown before models are unloaded)
++    if ([rsets->data count] != 0) {
++        GGML_LOG_WARN("%s: %lu Metal residency set(s) still active during cleanup — forcing release\n",
++                      __func__, (unsigned long)[rsets->data count]);
++        [rsets->data removeAllObjects];
++    }
+ 
+     atomic_store_explicit(&rsets->d_stop, true, memory_order_relaxed);
+ 

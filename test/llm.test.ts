@@ -155,3 +155,52 @@ describe('LlmModel tool calling', { skip: !hasToolModel ? 'No Qwen3.5-4B model f
     assert.equal(result.toolCalls, undefined, 'Should not have tool calls with toolChoice none');
   });
 });
+
+// ─── Gemma 4 Tests ───
+const GEMMA4_MODEL_PATH = path.join(MODELS_DIR, 'gemma-4-E2B-it-Q4_K_M.gguf');
+const hasGemma4 = existsSync(GEMMA4_MODEL_PATH);
+
+describe('Gemma 4 E2B Tests', { skip: !hasGemma4 ? 'No Gemma 4 model downloaded' : undefined }, () => {
+  let model: LlmModel;
+
+  before(async () => {
+    model = await loadModel(GEMMA4_MODEL_PATH, { type: 'llm', contextSize: 2048 }) as LlmModel;
+  });
+
+  after(async () => {
+    await model?.unload();
+  });
+
+  it('completes a simple prompt', async () => {
+    const opts = { temperature: 0, maxTokens: 512 };
+    const result = await model.complete([
+      { role: 'user', content: 'What is 2 + 2? Answer in one word.' },
+    ], opts);
+
+    console.log('\nGemma 4 result object:', JSON.stringify(result, null, 2));
+    assert.ok(result.content.length > 0 || (result.reasoning && result.reasoning.length > 0), 'Should have content or reasoning');
+    console.log('\nGemma 4 response to 2+2:\n' + result.content);
+  });
+
+  it('can call tools and think during the tool call', async () => {
+    const opts = { temperature: 0, maxTokens: 512, tools: [weatherTool], toolChoice: 'auto' as const };
+    const result = await model.complete([
+      { role: 'user', content: 'What is the weather in Tokyo?' },
+    ], opts);
+
+    console.log('\nGemma 4 tool call result object:', JSON.stringify(result, null, 2));
+
+    assert.ok(result.toolCalls, 'Should have toolCalls');
+    assert.ok(result.toolCalls!.length > 0, 'Should have at least one tool call');
+    assert.ok(result.reasoning && result.reasoning.length > 0, 'Should have a thinking process prior to tool calling');
+
+    const tc = result.toolCalls![0]!;
+    assert.equal(tc.name, 'get_weather', 'Should call get_weather');
+    assert.ok(tc.args, 'Should have args');
+
+    const args = JSON.parse(tc.args);
+    assert.ok(args.city, 'Should have city argument');
+  });
+});
+
+

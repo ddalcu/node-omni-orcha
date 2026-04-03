@@ -2,7 +2,7 @@
 
 Unified native Node.js inference engine — **LLM**, **Vision**, **Image/Video Generation**, **Speech-to-Text**, and **Text-to-Speech** in a single `omni.node` binary.
 
-Built on a [llama.cpp](https://github.com/ggml-org/llama.cpp) fork with [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp), [whisper.cpp](https://github.com/ggml-org/whisper.cpp), [qwen3-tts.cpp](https://github.com/predict-woo/qwen3-tts.cpp), and [Kokoro-82M](https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX) compiled against a shared ggml backend.
+Built on a [llama.cpp](https://github.com/ggml-org/llama.cpp) fork (synced to `f49e917` for Gemma 4 support) with [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp), [whisper.cpp](https://github.com/ggml-org/whisper.cpp), [qwen3-tts.cpp](https://github.com/predict-woo/qwen3-tts.cpp), and [Kokoro-82M](https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX) compiled against a shared ggml backend.
 
 ## Features
 

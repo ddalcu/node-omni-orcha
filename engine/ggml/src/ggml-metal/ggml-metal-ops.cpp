@@ -382,10 +382,6 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
             {
                 n_fuse = ggml_metal_op_im2col(ctx, idx);
             } break;
-        case GGML_OP_IM2COL_3D:
-            {
-                n_fuse = ggml_metal_op_im2col_3d(ctx, idx);
-            } break;
         case GGML_OP_CONV_2D:
             {
                 n_fuse = ggml_metal_op_conv_2d(ctx, idx);
@@ -397,6 +393,10 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
         case GGML_OP_CONV_TRANSPOSE_2D:
             {
                 n_fuse = ggml_metal_op_conv_transpose_2d(ctx, idx);
+            } break;
+        case GGML_OP_CONV_3D:
+            {
+                n_fuse = ggml_metal_op_conv_3d(ctx, idx);
             } break;
         case GGML_OP_UPSCALE:
             {
@@ -3623,99 +3623,6 @@ int ggml_metal_op_im2col(ggml_metal_op_t ctx, int idx) {
     return 1;
 }
 
-int ggml_metal_op_im2col_3d(ggml_metal_op_t ctx, int idx) {
-    ggml_tensor * op = ctx->node(idx);
-
-    ggml_metal_library_t lib = ctx->lib;
-    ggml_metal_encoder_t enc = ctx->enc;
-
-    GGML_TENSOR_LOCALS( int32_t, ne0, op->src[0], ne);
-    GGML_TENSOR_LOCALS(uint64_t, nb0, op->src[0], nb);
-    GGML_TENSOR_LOCALS( int32_t, ne1, op->src[1], ne);
-    GGML_TENSOR_LOCALS(uint64_t, nb1, op->src[1], nb);
-    GGML_TENSOR_LOCALS( int32_t, ne,  op,         ne);
-    GGML_TENSOR_LOCALS(uint64_t, nb,  op,         nb);
-
-    const int32_t s0 = ((const int32_t *)(op->op_params))[0];
-    const int32_t s1 = ((const int32_t *)(op->op_params))[1];
-    const int32_t s2 = ((const int32_t *)(op->op_params))[2];
-    const int32_t p0 = ((const int32_t *)(op->op_params))[3];
-    const int32_t p1 = ((const int32_t *)(op->op_params))[4];
-    const int32_t p2 = ((const int32_t *)(op->op_params))[5];
-    const int32_t d0 = ((const int32_t *)(op->op_params))[6];
-    const int32_t d1 = ((const int32_t *)(op->op_params))[7];
-    const int32_t d2 = ((const int32_t *)(op->op_params))[8];
-    const int32_t IC = ((const int32_t *)(op->op_params))[9];
-
-    const int32_t N  = ne13 / IC;
-    const int32_t ID = ne12;
-    const int32_t IH = ne11;
-    const int32_t IW = ne10;
-
-    const int32_t KD = ne02;
-    const int32_t KH = ne01;
-    const int32_t KW = ne00;
-
-    const int32_t OD = ne3 / N;
-    const int32_t OH = ne2;
-    const int32_t OW = ne1;
-
-    const int32_t IC_KD_KH_KW = IC * KD * KH * KW;
-
-    // Pre-divide byte strides by element size to get element strides (same as CUDA approach)
-    const size_t es = ggml_element_size(op->src[1]); // 4 for f32
-    const int64_t stride_q = (int64_t)(nb13 / es);
-    const int64_t stride_z = (int64_t)(nb12 / es);
-    const int64_t stride_y = (int64_t)(nb11 / es);
-
-    ggml_metal_kargs_im2col_3d args = {
-        /*.stride_q     =*/ stride_q,
-        /*.stride_z     =*/ stride_z,
-        /*.stride_y     =*/ stride_y,
-        /*.IW           =*/ IW,
-        /*.IH           =*/ IH,
-        /*.ID           =*/ ID,
-        /*.IC           =*/ IC,
-        /*.s0           =*/ s0,
-        /*.s1           =*/ s1,
-        /*.s2           =*/ s2,
-        /*.p0           =*/ p0,
-        /*.p1           =*/ p1,
-        /*.p2           =*/ p2,
-        /*.d0           =*/ d0,
-        /*.d1           =*/ d1,
-        /*.d2           =*/ d2,
-        /*.N            =*/ N,
-        /*.KW           =*/ KW,
-        /*.KH           =*/ KH,
-        /*.KD           =*/ KD,
-        /*.OW           =*/ OW,
-        /*.OH           =*/ OH,
-        /*.OD           =*/ OD,
-        /*.IC_KD_KH_KW =*/ IC_KD_KH_KW,
-    };
-
-    auto pipeline = ggml_metal_library_get_pipeline_im2col_3d(lib, op);
-
-    GGML_ASSERT(KH*KW <= ggml_metal_pipeline_max_theads_per_threadgroup(pipeline));
-
-    const uint64_t ntptg0 = std::min(ggml_metal_pipeline_max_theads_per_threadgroup(pipeline)/(KH*KW), N);
-
-    GGML_LOG_DEBUG("IM2COL_3D: N=%d IC=%d ID=%d IH=%d IW=%d KD=%d KH=%d KW=%d "
-                   "OD=%d OH=%d OW=%d ntptg0=%llu type=%s\n",
-                   N, IC, ID, IH, IW, KD, KH, KW, OD, OH, OW,
-                   (unsigned long long)ntptg0, ggml_type_name(op->type));
-
-    ggml_metal_encoder_set_pipeline(enc, pipeline);
-    ggml_metal_encoder_set_bytes   (enc, &args, sizeof(args), 0);
-    ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[1]), 1);
-    ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op),         2);
-
-    ggml_metal_encoder_dispatch_threadgroups(enc, IC, OH, OW, ntptg0, KH, KW);
-
-    return 1;
-}
-
 int ggml_metal_op_conv_2d(ggml_metal_op_t ctx, int idx) {
     ggml_tensor * op = ctx->node(idx);
 
@@ -3790,6 +3697,77 @@ int ggml_metal_op_conv_2d(ggml_metal_op_t ctx, int idx) {
     ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op),         3);
 
     ggml_metal_encoder_dispatch_threadgroups(enc, tg, 1, 1, nth, 1, 1);
+
+    return 1;
+}
+
+int ggml_metal_op_conv_3d(ggml_metal_op_t ctx, int idx) {
+    ggml_tensor * op = ctx->node(idx);
+
+    ggml_metal_library_t lib = ctx->lib;
+    ggml_metal_encoder_t enc = ctx->enc;
+
+    // 1. Extract standard dimensions and byte strides
+    GGML_TENSOR_LOCALS(uint64_t, nb0, op->src[0], nb);
+    GGML_TENSOR_LOCALS(uint64_t, nb1, op->src[1], nb);
+    GGML_TENSOR_LOCALS(uint64_t, nb,  op,         nb);
+
+    // 2. Extract hyperparams from op_params
+    const int32_t s0 = ((const int32_t *)(op->op_params))[0];
+    const int32_t s1 = ((const int32_t *)(op->op_params))[1];
+    const int32_t s2 = ((const int32_t *)(op->op_params))[2];
+    const int32_t p0 = ((const int32_t *)(op->op_params))[3];
+    const int32_t p1 = ((const int32_t *)(op->op_params))[4];
+    const int32_t p2 = ((const int32_t *)(op->op_params))[5];
+    const int32_t d0 = ((const int32_t *)(op->op_params))[6];
+    const int32_t d1 = ((const int32_t *)(op->op_params))[7];
+    const int32_t d2 = ((const int32_t *)(op->op_params))[8];
+    const int32_t IC = ((const int32_t *)(op->op_params))[9];
+    const int32_t N  = ((const int32_t *)(op->op_params))[10];
+    const int32_t OC = ((const int32_t *)(op->op_params))[11];
+
+    // 3. Build the parameter struct using the macro-generated variables
+    ggml_metal_kargs_conv_3d args = {
+        /*.IW =*/ (int32_t)op->src[1]->ne[0],
+        /*.IH =*/ (int32_t)op->src[1]->ne[1],
+        /*.ID =*/ (int32_t)op->src[1]->ne[2],
+        /*.OW =*/ (int32_t)op->ne[0],
+        /*.OH =*/ (int32_t)op->ne[1],
+        /*.OD =*/ (int32_t)op->ne[2],
+        /*.KW =*/ (int32_t)op->src[0]->ne[0],
+        /*.KH =*/ (int32_t)op->src[0]->ne[1],
+        /*.KD =*/ (int32_t)op->src[0]->ne[2],
+        s0, s1, s2,
+        p0, p1, p2,
+        d0, d1, d2,
+        IC, N, OC,
+        nb00, nb01, nb02, nb03, // Weight strides
+        nb10, nb11, nb12, nb13, // Input strides
+        nb0,  nb1,  nb2,  nb3   // Output strides
+    };
+
+    // 4. Fetch the JIT pipeline
+    auto pipeline = ggml_metal_library_get_pipeline_conv_3d(lib, op);
+
+    // 5. Grid mapping
+    int nth0 = 32; // Standard SIMD width for Apple Silicon
+    int nth1 = 1;
+    int nth2 = 1;
+
+    int64_t spatial_volume = args.OW * args.OH * args.OD;
+
+    int ntg0 = (spatial_volume + nth0 - 1) / nth0;
+    int ntg1 = args.OC;
+    int ntg2 = args.N;
+
+    // 6. Bind and Dispatch via the ggml C wrapper
+    ggml_metal_encoder_set_pipeline(enc, pipeline);
+    ggml_metal_encoder_set_bytes   (enc, &args, sizeof(args), 0);
+    ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[0]), 1);
+    ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[1]), 2);
+    ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op),         3);
+
+    ggml_metal_encoder_dispatch_threadgroups(enc, ntg0, ntg1, ntg2, nth0, nth1, nth2);
 
     return 1;
 }
@@ -3970,32 +3948,23 @@ int ggml_metal_op_pad(ggml_metal_op_t ctx, int idx) {
     GGML_TENSOR_LOCALS( int32_t, ne,  op,         ne);
     GGML_TENSOR_LOCALS(uint64_t, nb,  op,         nb);
 
-    const int32_t p0_before = ggml_get_op_params_i32(op, 0);
-    const int32_t p1_before = ggml_get_op_params_i32(op, 2);
-    const int32_t p2_before = ggml_get_op_params_i32(op, 4);
-    const int32_t p3_before = ggml_get_op_params_i32(op, 6);
-
     ggml_metal_kargs_pad args = {
-        /*.ne00      =*/ ne00,
-        /*.ne01      =*/ ne01,
-        /*.ne02      =*/ ne02,
-        /*.ne03      =*/ ne03,
-        /*.nb00      =*/ nb00,
-        /*.nb01      =*/ nb01,
-        /*.nb02      =*/ nb02,
-        /*.nb03      =*/ nb03,
-        /*.ne0       =*/ ne0,
-        /*.ne1       =*/ ne1,
-        /*.ne2       =*/ ne2,
-        /*.ne3       =*/ ne3,
-        /*.nb0       =*/ nb0,
-        /*.nb1       =*/ nb1,
-        /*.nb2       =*/ nb2,
-        /*.nb3       =*/ nb3,
-        /*.p0_before =*/ p0_before,
-        /*.p1_before =*/ p1_before,
-        /*.p2_before =*/ p2_before,
-        /*.p3_before =*/ p3_before,
+        /*.ne00 =*/ ne00,
+        /*.ne01 =*/ ne01,
+        /*.ne02 =*/ ne02,
+        /*.ne03 =*/ ne03,
+        /*.nb00 =*/ nb00,
+        /*.nb01 =*/ nb01,
+        /*.nb02 =*/ nb02,
+        /*.nb03 =*/ nb03,
+        /*.ne0  =*/ ne0,
+        /*.ne1  =*/ ne1,
+        /*.ne2  =*/ ne2,
+        /*.ne3  =*/ ne3,
+        /*.nb0  =*/ nb0,
+        /*.nb1  =*/ nb1,
+        /*.nb2  =*/ nb2,
+        /*.nb3  =*/ nb3
     };
 
     auto pipeline = ggml_metal_library_get_pipeline_pad(lib, op);

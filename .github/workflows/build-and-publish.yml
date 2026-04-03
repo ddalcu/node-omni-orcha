@@ -57,10 +57,16 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install ccache
 
-      - name: Install ccache and Ninja (Windows)
+      - name: Install Ninja (Windows)
         if: runner.os == 'Windows'
         shell: bash
-        run: choco install ccache ninja -y
+        run: |
+          if ! command -v ninja &>/dev/null; then
+            choco install ninja -y
+          fi
+          if ! command -v ccache &>/dev/null; then
+            choco install ccache -y
+          fi
 
       - name: Cache ccache
         uses: actions/cache@v4

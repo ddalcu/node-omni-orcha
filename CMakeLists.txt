@@ -137,6 +137,7 @@ add_library(mtmd STATIC
   engine/mtmd/models/cogvlm.cpp
   engine/mtmd/models/conformer.cpp
   engine/mtmd/models/deepseekocr.cpp
+  engine/mtmd/models/gemma4v.cpp
   engine/mtmd/models/glm4v.cpp
   engine/mtmd/models/internvl.cpp
   engine/mtmd/models/kimik25.cpp

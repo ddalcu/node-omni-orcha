@@ -236,6 +236,78 @@ describe('Multimodal Vision Model', {
   });
 });
 
+// ─── Gemma 4 Vision (gemma4v mmproj) tests ───
+
+const GEMMA4_DIR = path.join(MODELS_DIR, 'gemma-4-e2b-it');
+const GEMMA4_MODEL_PATH = path.join(GEMMA4_DIR, 'gemma-4-E2B-it-IQ4_NL.gguf');
+const GEMMA4_MMPROJ_PATH = path.join(GEMMA4_DIR, 'mmproj-BF16.gguf');
+const hasGemma4Vision = existsSync(GEMMA4_MODEL_PATH) && existsSync(GEMMA4_MMPROJ_PATH);
+const FIXTURE_IMAGE = path.join(import.meta.dirname, 'fixtures', 'test-image.png');
+
+describe('Gemma 4 Vision (gemma4v mmproj)', {
+  skip: !hasGemma4Vision ? `No Gemma 4 vision model at ${GEMMA4_DIR}` : undefined,
+}, () => {
+  let model: LlmModel;
+
+  before(async () => {
+    model = await loadModel(GEMMA4_MODEL_PATH, {
+      type: 'llm',
+      contextSize: 4096,
+      mmprojPath: GEMMA4_MMPROJ_PATH,
+    }) as LlmModel;
+  });
+
+  after(async () => {
+    await model?.unload();
+  });
+
+  it('loads gemma4v mmproj successfully and reports hasVision', () => {
+    assert.equal(model.hasVision, true, 'Gemma 4 with mmproj should have vision');
+  });
+
+  it('describes an image from buffer', async () => {
+    const imageData = readFileSync(FIXTURE_IMAGE);
+    const result = await model.complete([
+      {
+        role: 'user',
+        content: [
+          { type: 'image', data: imageData },
+          { type: 'text', text: 'Describe what you see in this image in one sentence.' },
+        ],
+      },
+    ], { temperature: 0, maxTokens: 100, thinkingBudget: 0 });
+
+    assert.ok(result.content.length > 0, 'Should produce a description');
+    assert.ok(result.usage.inputTokens > 50, 'Image tokens should inflate input count');
+
+    const text = `Gemma 4 Vision result:\n${result.content}\n\nUsage: ${JSON.stringify(result.usage)}`;
+    const outPath = saveTestOutput('multimodal', 'gemma4v-describe', {}, text, '.txt');
+    console.log(`    Saved: ${outPath}`);
+  });
+
+  it('streams vision responses', async () => {
+    const imageData = readFileSync(FIXTURE_IMAGE);
+    let content = '';
+    let chunkCount = 0;
+
+    for await (const chunk of model.stream([
+      {
+        role: 'user',
+        content: [
+          { type: 'image', data: imageData },
+          { type: 'text', text: 'What color is this image?' },
+        ],
+      },
+    ], { temperature: 0, maxTokens: 50, thinkingBudget: 0 })) {
+      if (chunk.content) content += chunk.content;
+      chunkCount++;
+    }
+
+    assert.ok(content.length > 0, 'Stream should produce content');
+    assert.ok(chunkCount > 1, 'Should have multiple chunks');
+  });
+});
+
 // ─── Error handling tests ───
 
 describe('Multimodal Error Handling', {

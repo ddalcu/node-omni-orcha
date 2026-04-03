@@ -3,7 +3,7 @@
 #include "stable-diffusion.h"
 
 // stb_image for decoding init images (PNG/JPEG buffers)
-#define STB_IMAGE_IMPLEMENTATION
+// STB_IMAGE_IMPLEMENTATION is defined in mtmd-helper.cpp — only include the header here
 #include "stb_image.h"
 
 // stb_image_write for PNG encoding

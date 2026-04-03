@@ -2,12 +2,12 @@
 
 Unified native Node.js inference engine — **LLM**, **Vision**, **Image/Video Generation**, **Speech-to-Text**, and **Text-to-Speech** in a single `omni.node` binary.
 
-Built on a [llama.cpp](https://github.com/ggml-org/llama.cpp) fork (synced to `f49e917` for Gemma 4 support) with [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp), [whisper.cpp](https://github.com/ggml-org/whisper.cpp), [qwen3-tts.cpp](https://github.com/predict-woo/qwen3-tts.cpp), and [Kokoro-82M](https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX) compiled against a shared ggml backend.
+Built on a [llama.cpp](https://github.com/ggml-org/llama.cpp) fork (synced to [`f49e917`](https://github.com/ggml-org/llama.cpp/commit/f49e917)) with [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp), [whisper.cpp](https://github.com/ggml-org/whisper.cpp), [qwen3-tts.cpp](https://github.com/predict-woo/qwen3-tts.cpp), and [Kokoro-82M](https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX) compiled against a shared ggml backend.
 
 ## Features
 
 - **LLM** — Chat completion, streaming, embeddings, tool calling, reasoning budget control
-- **Vision** — Multimodal LLM with image input (Qwen2-VL, Qwen3-VL, LLaVA, Gemma3, etc.)
+- **Vision** — Multimodal LLM with image input (Gemma 4, Qwen2-VL, Qwen3-VL, LLaVA, Gemma3, etc.)
 - **Image Generation** — FLUX 2, Wan 2.2, SD/SDXL (text-to-image)
 - **Video Generation** — Wan 2.2 (text-to-video, image-to-video)
 - **Speech-to-Text** — Whisper (language detection, timestamps)
@@ -90,7 +90,7 @@ const result = await vlm.complete([{
 }])
 ```
 
-Supported architectures: Qwen2-VL, Qwen3-VL, LLaVA, Gemma3, CogVLM, Chameleon, MiniCPM, InternVL, etc.
+Supported architectures: Gemma 4, Qwen2-VL, Qwen3-VL, LLaVA, Gemma3, CogVLM, Chameleon, MiniCPM, InternVL, etc.
 
 ### Image Generation (FLUX 2)
 
@@ -271,6 +271,17 @@ node scripts/vision-integration-test.ts            # Vision/Multimodal
 - **C++17** compiler (Clang, GCC, MSVC)
 - **macOS**: Xcode Command Line Tools (for Metal)
 - **Linux/Windows**: CUDA Toolkit 13.1+ (for NVIDIA GPU support)
+
+## Upstream Sync Log
+
+| Date | llama.cpp Commit | Notable Additions |
+|------|-----------------|-------------------|
+| 2026-04-03 | [`f49e917`](https://github.com/ggml-org/llama.cpp/commit/f49e917) | Gemma 4 vision projector (`gemma4v`), Gemma 4 audio projector (`gemma4a`), Gemma 4 MoE LLM arch, Gemma 4 tokenizer, AMD ZenDNN label, various mtmd fixes |
+| 2026-04-02 | [`f49e917`](https://github.com/ggml-org/llama.cpp/commit/f49e917) | Initial full sync — Gemma 4 LLM (text-only), all existing vision projectors |
+
+**Local patches** (preserved across syncs):
+- `engine/ggml/src/ggml-cuda/ggml-cuda.cu` — CUDA errors throw `std::runtime_error` instead of `GGML_ABORT` so N-API callers can catch OOM and retry with fewer GPU layers
+- `engine/ggml/src/ggml-metal/ggml-metal-device.m` — Metal device customization
 
 ## License
 

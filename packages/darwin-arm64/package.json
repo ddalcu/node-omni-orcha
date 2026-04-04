@@ -4,7 +4,7 @@
   "description": "node-omni-orcha prebuilt binaries for macOS arm64 (Metal GPU)",
   "os": ["darwin"],
   "cpu": ["arm64"],
-  "files": ["*.node", "*.metallib"],
+  "files": ["*.node", "*.metallib", "*.dylib"],
   "license": "MIT",
   "publishConfig": {
     "access": "public"

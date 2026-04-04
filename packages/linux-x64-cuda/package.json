@@ -4,7 +4,7 @@
   "description": "node-omni-orcha prebuilt binaries for Linux x64 (CUDA GPU)",
   "os": ["linux"],
   "cpu": ["x64"],
-  "files": ["*.node"],
+  "files": ["*.node", "*.so*"],
   "license": "MIT",
   "publishConfig": {
     "access": "public"

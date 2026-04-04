@@ -300,16 +300,32 @@ if(KOKORO_ENABLED)
   if(APPLE)
     target_link_libraries(omni PRIVATE "${ONNXRUNTIME_DIR}/lib/libonnxruntime.dylib")
     set_target_properties(omni PROPERTIES
-      INSTALL_RPATH "@loader_path;${ONNXRUNTIME_DIR}/lib"
-      BUILD_RPATH "${ONNXRUNTIME_DIR}/lib"
+      BUILD_RPATH "@loader_path;${ONNXRUNTIME_DIR}/lib"
+    )
+    # cmake-js doesn't run the install step, so INSTALL_RPATH is never applied.
+    # BUILD_RPATH includes both @loader_path and the absolute vendor path.
+    # Post-build: strip the absolute path so the shipped binary only has @loader_path.
+    add_custom_command(TARGET omni POST_BUILD
+      COMMAND install_name_tool -delete_rpath "${ONNXRUNTIME_DIR}/lib" "$<TARGET_FILE:omni>" || true
+      # Copy dylib next to omni.node so @loader_path works for local dev too
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${ONNXRUNTIME_DIR}/lib/libonnxruntime.1.22.0.dylib"
+        "$<TARGET_FILE_DIR:omni>/libonnxruntime.1.22.0.dylib"
     )
   elseif(MSVC)
     target_link_libraries(omni PRIVATE "${ONNXRUNTIME_DIR}/lib/onnxruntime.lib")
   else()
     target_link_libraries(omni PRIVATE "${ONNXRUNTIME_DIR}/lib/libonnxruntime.so")
     set_target_properties(omni PROPERTIES
-      INSTALL_RPATH "$ORIGIN;${ONNXRUNTIME_DIR}/lib"
-      BUILD_RPATH "${ONNXRUNTIME_DIR}/lib"
+      BUILD_RPATH "$ORIGIN;${ONNXRUNTIME_DIR}/lib"
+    )
+    # Same fix for Linux — strip the absolute vendor path, keep only $ORIGIN
+    # and copy the .so next to omni.node for local dev
+    add_custom_command(TARGET omni POST_BUILD
+      COMMAND patchelf --set-rpath "$$ORIGIN" "$<TARGET_FILE:omni>" 2>/dev/null || true
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${ONNXRUNTIME_DIR}/lib/libonnxruntime.so"
+        "$<TARGET_FILE_DIR:omni>/libonnxruntime.so" 2>/dev/null || true
     )
   endif()
   target_compile_definitions(omni PRIVATE KOKORO_ENABLED)

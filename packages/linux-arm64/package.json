@@ -4,7 +4,7 @@
   "description": "node-omni-orcha prebuilt binaries for Linux arm64 (CPU)",
   "os": ["linux"],
   "cpu": ["arm64"],
-  "files": ["*.node", "*.so*"],
+  "files": ["*.node", "libonnxruntime*"],
   "license": "MIT",
   "publishConfig": {
     "access": "public"

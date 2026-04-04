@@ -171,10 +171,12 @@ jobs:
           cp build/Release/*.node artifacts/
           cp build/Release/*.metallib artifacts/ 2>/dev/null || true
           cp build/Release/*.dll artifacts/ 2>/dev/null || true
-          # Bundle ONNX Runtime shared library for Kokoro TTS
-          cp engine/vendor/onnxruntime/lib/libonnxruntime*.dylib artifacts/ 2>/dev/null || true
-          cp engine/vendor/onnxruntime/lib/libonnxruntime*.so* artifacts/ 2>/dev/null || true
-          cp engine/vendor/onnxruntime/lib/onnxruntime*.dll artifacts/ 2>/dev/null || true
+          # Bundle ONNX Runtime shared library for Kokoro TTS (skip CUDA — too large for npm)
+          if [[ "${{ matrix.gpu }}" != "cuda" ]]; then
+            cp engine/vendor/onnxruntime/lib/libonnxruntime*.dylib artifacts/ 2>/dev/null || true
+            cp engine/vendor/onnxruntime/lib/libonnxruntime*.so* artifacts/ 2>/dev/null || true
+            cp engine/vendor/onnxruntime/lib/onnxruntime*.dll artifacts/ 2>/dev/null || true
+          fi
           cp packages/${{ matrix.package }}/package.json artifacts/
           echo "Packaged artifacts:"
           ls -lh artifacts/

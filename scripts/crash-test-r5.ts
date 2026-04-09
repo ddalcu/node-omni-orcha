@@ -6,12 +6,11 @@ import * as path from 'node:path';
 import { existsSync } from 'node:fs';
 import { loadModel, createModel, detectGpu } from '../src/index.ts';
 import { loadBinding } from '../src/binding-loader.ts';
-import type { LlmModel, ImageModel, SttModel } from '../src/types.ts';
+import type { LlmModel, ImageModel } from '../src/types.ts';
 
 const MODELS_DIR = process.env['MODELS_DIR'] || path.join(process.env['HOME'] || process.env['USERPROFILE'] || '', '.orcha', 'workspace', '.models');
 
 const LLM_MODEL = path.join(MODELS_DIR, 'qwen3-5-4b', 'Qwen3.5-4B-IQ4_NL.gguf');
-const WHISPER_MODEL = path.join('test', 'fixtures', 'whisper-tiny.bin');
 const FLUX_DIR = path.join(MODELS_DIR, 'flux2-klein');
 const FLUX_MODEL = path.join(FLUX_DIR, 'flux-2-klein-4b-Q4_K_M.gguf');
 const FLUX_LLM = path.join(FLUX_DIR, 'Qwen3-4B-Q4_K_M.gguf');
@@ -55,15 +54,6 @@ async function testConcurrentLoadRace() {
     if (!r.content) throw new Error('No content');
     await model.unload();
   });
-
-  if (existsSync(WHISPER_MODEL)) {
-    await test('concurrent STT loads', async () => {
-      const model = createModel(WHISPER_MODEL, 'stt');
-      await Promise.all(Array.from({ length: 3 }, () => model.load()));
-      if (!model.loaded) throw new Error('Not loaded');
-      await model.unload();
-    });
-  }
 
   await test('load after failed load retries correctly', async () => {
     const model = createModel('/nonexistent.gguf', 'llm');

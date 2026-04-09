@@ -4,16 +4,14 @@
  * load/unload races, ParseMessages crashes, type mismatches, image reuse
  */
 import * as path from 'node:path';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { loadModel, createModel } from '../src/index.ts';
 import { loadBinding } from '../src/binding-loader.ts';
-import type { LlmModel, SttModel, TtsModel, ImageModel, ChatMessage } from '../src/types.ts';
+import type { LlmModel, TtsModel, ImageModel, ChatMessage } from '../src/types.ts';
 
 const MODELS_DIR = process.env['MODELS_DIR'] || path.join(process.env['HOME'] || process.env['USERPROFILE'] || '', '.orcha', 'workspace', '.models');
 const LLM_MODEL = path.join(MODELS_DIR, 'qwen3-5-4b', 'Qwen3.5-4B-IQ4_NL.gguf');
-const WHISPER_MODEL = path.join('test', 'fixtures', 'whisper-tiny.bin');
 const TTS_DIR = path.join(MODELS_DIR, 'qwen3-tts');
-const TEST_AUDIO = path.join('test', 'fixtures', 'test-audio.pcm');
 
 let passed = 0;
 let failed = 0;
@@ -289,15 +287,6 @@ async function testNativeEdgeCases() {
     }
   });
 
-  await test('createSttContext with number', async () => {
-    try {
-      await (binding['createSttContext'] as Function)(123);
-      throw new Error('Should have thrown');
-    } catch (e: any) {
-      if (e.message === 'Should have thrown') throw e;
-    }
-  });
-
   await test('createTtsContext with null', async () => {
     try {
       await (binding['createTtsContext'] as Function)(null, {});
@@ -315,87 +304,6 @@ async function testNativeEdgeCases() {
       if (e.message === 'Should have thrown') throw e;
     }
   });
-}
-
-// ─── STT Deep Tests ───
-
-async function testSTTDeep() {
-  await section('STT Deep Edge Cases');
-
-  if (!existsSync(WHISPER_MODEL)) {
-    console.log('  SKIP: No whisper model');
-    return;
-  }
-
-  let stt: SttModel;
-  await test('load STT', async () => {
-    stt = await loadModel(WHISPER_MODEL, { type: 'stt' }) as SttModel;
-  });
-
-  // Very large buffer (10 seconds of noise)
-  await test('large audio buffer (10s noise)', async () => {
-    const big = Buffer.alloc(16000 * 2 * 10); // 10 seconds
-    for (let i = 0; i < big.length; i += 2) {
-      big.writeInt16LE(Math.floor(Math.random() * 65536 - 32768), i);
-    }
-    await stt.transcribe(big, { language: 'en' });
-  });
-
-  // Invalid language code
-  await test('transcribe with invalid language code', async () => {
-    const audio = Buffer.alloc(16000 * 2); // 1 second silence
-    try {
-      await stt.transcribe(audio, { language: 'zzzz_invalid' });
-    } catch (e: any) {
-      // Error is fine
-    }
-  });
-
-  // Rapid sequential transcriptions
-  await test('rapid sequential transcriptions (5x)', async () => {
-    const audio = Buffer.alloc(16000 * 2);
-    for (let i = 0; i < 5; i++) {
-      await stt.transcribe(audio, { language: 'en' });
-    }
-  });
-
-  // Heavy concurrent transcriptions (now with mutex)
-  await test('heavy concurrent transcriptions (5x)', async () => {
-    const audio = Buffer.alloc(16000 * 2);
-    const promises = Array.from({ length: 5 }, () =>
-      stt.transcribe(audio, { language: 'en' })
-    );
-    await Promise.all(promises);
-  });
-
-  // Concurrent transcribe + detectLanguage
-  await test('concurrent transcribe + detectLanguage', async () => {
-    const audio = Buffer.alloc(16000 * 2 * 2); // 2 seconds
-    await Promise.all([
-      stt.transcribe(audio, { language: 'en' }),
-      stt.detectLanguage(audio),
-    ]);
-  });
-
-  // Odd-sized buffer (not a multiple of 2)
-  await test('odd-sized audio buffer (1001 bytes)', async () => {
-    try {
-      await stt.transcribe(Buffer.alloc(1001), { language: 'en' });
-    } catch (e: any) {
-      // May produce garbage results but shouldn't crash
-    }
-  });
-
-  // Buffer with extreme values
-  await test('audio buffer with max/min int16 values', async () => {
-    const extreme = Buffer.alloc(16000 * 2);
-    for (let i = 0; i < extreme.length; i += 2) {
-      extreme.writeInt16LE(i % 4 === 0 ? 32767 : -32768, i);
-    }
-    await stt.transcribe(extreme, { language: 'en' });
-  });
-
-  await stt.unload();
 }
 
 // ─── TTS Deep Tests ───
@@ -517,29 +425,8 @@ async function testImageDeep() {
 async function testCrossEngine() {
   await section('Cross-Engine Stress');
 
-  // Load multiple models simultaneously
-  const hasLlm = existsSync(LLM_MODEL);
-  const hasStt = existsSync(WHISPER_MODEL);
-
-  if (hasLlm && hasStt) {
-    await test('concurrent model loading (LLM + STT)', async () => {
-      const [llm, stt] = await Promise.all([
-        loadModel(LLM_MODEL, { type: 'llm', contextSize: 2048, gpuLayers: 0, flashAttn: false }),
-        loadModel(WHISPER_MODEL, { type: 'stt' }),
-      ]);
-      // Use both
-      const [completionResult, transcribeResult] = await Promise.all([
-        (llm as LlmModel).complete(
-          [{ role: 'user', content: 'Hi' }],
-          { maxTokens: 3, temperature: 0, thinkingBudget: 0 }
-        ),
-        (stt as SttModel).transcribe(Buffer.alloc(16000 * 2), { language: 'en' }),
-      ]);
-      await Promise.all([llm.unload(), stt.unload()]);
-    });
-  }
-
   // Load same model path twice (different instances)
+  const hasLlm = existsSync(LLM_MODEL);
   if (hasLlm) {
     await test('two LLM instances from same file', async () => {
       const llm1 = await loadModel(LLM_MODEL, { type: 'llm', contextSize: 2048, gpuLayers: 0, flashAttn: false }) as LlmModel;
@@ -570,7 +457,6 @@ async function testLoadBinding() {
   await test('binding has expected factory functions', async () => {
     const b = lb();
     if (typeof b['createLlmContext'] !== 'function') throw new Error('Missing createLlmContext');
-    if (typeof b['createSttContext'] !== 'function') throw new Error('Missing createSttContext');
     if (typeof b['createTtsContext'] !== 'function') throw new Error('Missing createTtsContext');
     if (typeof b['createImageContext'] !== 'function') throw new Error('Missing createImageContext');
   });
@@ -586,7 +472,6 @@ async function main() {
   await testLoadBinding();
   await testNativeEdgeCases();
   await testLLMDeep();
-  await testSTTDeep();
   await testTTSDeep();
   await testImageDeep();
   await testCrossEngine();

@@ -16,7 +16,7 @@ test/fixtures/*.mp3
 # Integration test output
 test-output/
 
-# Downloaded dependencies (ONNX Runtime pre-built binaries)
+# Downloaded vendor binaries (legacy, may exist locally)
 engine/vendor/onnxruntime/
 
 # SSL certs

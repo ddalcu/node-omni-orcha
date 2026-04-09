@@ -2,15 +2,12 @@
  * CUDA-specific crash tests — exercises GPU code paths
  */
 import * as path from 'node:path';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { loadModel, createModel, detectGpu } from '../src/index.ts';
-import type { LlmModel, SttModel, ChatMessage } from '../src/types.ts';
+import type { LlmModel, ChatMessage } from '../src/types.ts';
 
 const MODELS_DIR = process.env['MODELS_DIR'] || path.join(process.env['HOME'] || process.env['USERPROFILE'] || '', '.orcha', 'workspace', '.models');
 const LLM_MODEL = path.join(MODELS_DIR, 'qwen3-5-4b', 'Qwen3.5-4B-IQ4_NL.gguf');
-const WHISPER_MODEL = path.join('test', 'fixtures', 'whisper-tiny.bin');
-const TEST_AUDIO = path.join('test', 'fixtures', 'test-audio.pcm');
-
 let passed = 0;
 let failed = 0;
 let crashed = 0;
@@ -230,108 +227,9 @@ async function testLLMCudaOomFallback() {
   });
 }
 
-async function testSTTCuda() {
-  console.log('\n=== STT on CUDA ===');
-
-  if (!existsSync(WHISPER_MODEL)) {
-    console.log('  SKIP: No whisper model');
-    return;
-  }
-
-  let stt: SttModel;
-
-  await test('load STT (GPU-accelerated)', async () => {
-    stt = await loadModel(WHISPER_MODEL, { type: 'stt' }) as SttModel;
-  });
-
-  if (existsSync(TEST_AUDIO)) {
-    await test('GPU transcription of real audio', async () => {
-      const audio = readFileSync(TEST_AUDIO);
-      const r = await stt.transcribe(audio, { language: 'en' });
-      console.log(`[${r.text.substring(0, 50)}] `);
-    });
-  }
-
-  await test('concurrent GPU transcriptions (3x)', async () => {
-    const audio = Buffer.alloc(16000 * 2 * 2); // 2s silence
-    const results = await Promise.all([
-      stt.transcribe(audio, { language: 'en' }),
-      stt.transcribe(audio, { language: 'en' }),
-      stt.transcribe(audio, { language: 'en' }),
-    ]);
-  });
-
-  await test('rapid sequential GPU transcriptions (5x)', async () => {
-    const audio = Buffer.alloc(16000 * 2);
-    for (let i = 0; i < 5; i++) {
-      await stt.transcribe(audio, { language: 'en' });
-    }
-  });
-
-  await stt.unload();
-}
-
-async function testTwoGpuModels() {
-  console.log('\n=== Multiple GPU Models Simultaneously ===');
-
-  const hasLlm = existsSync(LLM_MODEL);
-  const hasStt = existsSync(WHISPER_MODEL);
-
-  if (hasLlm && hasStt) {
-    await test('LLM + STT both on GPU concurrently', async () => {
-      const llm = await loadModel(LLM_MODEL, {
-        type: 'llm', contextSize: 2048, gpuLayers: -1,
-      }) as LlmModel;
-      const stt = await loadModel(WHISPER_MODEL, { type: 'stt' }) as SttModel;
-
-      // Run both at the same time
-      const [cr, tr] = await Promise.all([
-        llm.complete([{ role: 'user', content: 'Say hi' }], { maxTokens: 5, temperature: 0, thinkingBudget: 0 }),
-        stt.transcribe(Buffer.alloc(16000 * 2), { language: 'en' }),
-      ]);
-
-      if (!cr.content && cr.content !== '') throw new Error('LLM no output');
-
-      await Promise.all([llm.unload(), stt.unload()]);
-    });
-  }
-
-  if (hasLlm) {
-    await test('two LLM instances on GPU concurrently', async () => {
-      const llm1 = await loadModel(LLM_MODEL, {
-        type: 'llm', contextSize: 2048, gpuLayers: -1,
-      }) as LlmModel;
-
-      // Second instance may fail with OOM — that's fine
-      try {
-        const llm2 = await loadModel(LLM_MODEL, {
-          type: 'llm', contextSize: 2048, gpuLayers: -1,
-        }) as LlmModel;
-
-        const [r1, r2] = await Promise.all([
-          llm1.complete([{ role: 'user', content: 'A' }], { maxTokens: 3, temperature: 0, thinkingBudget: 0 }),
-          llm2.complete([{ role: 'user', content: 'B' }], { maxTokens: 3, temperature: 0, thinkingBudget: 0 }),
-        ]);
-
-        await Promise.all([llm1.unload(), llm2.unload()]);
-      } catch (e: any) {
-        // OOM is expected — just verify first model still works
-        const r = await llm1.complete(
-          [{ role: 'user', content: 'Still alive?' }],
-          { maxTokens: 5, temperature: 0, thinkingBudget: 0 }
-        );
-        if (!r.content) throw new Error('First model broken after second OOM');
-        await llm1.unload();
-      }
-    });
-  }
-}
-
 async function main() {
   await testLLMCuda();
   await testLLMCudaOomFallback();
-  await testSTTCuda();
-  await testTwoGpuModels();
 
   console.log('\n========================================');
   console.log(`  RESULTS: ${passed} passed, ${failed} failed, ${crashed} crashed`);

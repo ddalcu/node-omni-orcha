@@ -1,6 +1,6 @@
 /**
  * Samuel L. Jackson-themed integration test across all engines.
- * Tests LLM with and without reasoning, TTS voice cloning, STT transcription of TTS output.
+ * Tests LLM with and without reasoning, TTS voice cloning.
  * Outputs everything to test-output/ with datetime and model params in filenames.
  *
  * Usage: node scripts/samuel-jackson-test.ts
@@ -10,7 +10,7 @@ import { existsSync } from 'node:fs';
 import * as path from 'node:path';
 import { createModel } from '../src/index.ts';
 import { saveTestOutput } from '../test/test-output-helper.ts';
-import type { LlmModel, TtsModel, SttModel } from '../src/types.ts';
+import type { LlmModel, TtsModel } from '../src/types.ts';
 
 const MODELS_DIR = process.env['MODELS_DIR'] || `${process.env['HOME']}/.orcha/workspace/.models`;
 const FIXTURES = path.resolve(import.meta.dirname!, '..', 'test', 'fixtures');
@@ -22,24 +22,8 @@ function resolveModel(...candidates: string[]): string | null {
   return null;
 }
 
-// Resample 24kHz WAV → 16kHz 16-bit PCM for whisper
-function wavToWhisperPcm(wav: Buffer): Buffer {
-  const pcm24k = wav.subarray(44); // skip WAV header
-  const samplesIn = pcm24k.length / 2;
-  const ratio = 16000 / 24000;
-  const samplesOut = Math.floor(samplesIn * ratio);
-  const pcm16k = Buffer.alloc(samplesOut * 2);
-  for (let i = 0; i < samplesOut; i++) {
-    const srcIdx = Math.min(Math.floor(i / ratio), samplesIn - 1);
-    pcm16k.writeInt16LE(pcm24k.readInt16LE(srcIdx * 2), i * 2);
-  }
-  return pcm16k;
-}
-
 async function main() {
   console.log('Samuel L. Jackson Integration Test\n');
-
-  const ttsWavBuffers: { phrase: string; wav: Buffer; filename: string }[] = [];
 
   // ─── 1. LLM ───
 
@@ -166,8 +150,6 @@ async function main() {
 
         const outPath = saveTestOutput('tts', 'qwen3-0.6b-f16', { voice: `samuel-clone-${i + 1}` }, wav, '.wav');
         console.log(`  Saved: ${outPath} (${(wav.length / 1024).toFixed(0)}KB, ${durationSec}s audio, ${elapsed}s)`);
-
-        ttsWavBuffers.push({ phrase: phrases[i]!, wav, filename: path.basename(outPath) });
       }
 
       await tts.unload();
@@ -177,46 +159,6 @@ async function main() {
     }
   } else {
     console.log('  SKIP: Qwen3 TTS models or Samuel.wav not found\n');
-  }
-
-  // ─── 4. STT: Transcribe the TTS output ───
-
-  console.log('=== STT: Transcribe TTS Output (Whisper) ===');
-  const whisperPath = path.join(FIXTURES, 'whisper-tiny.bin');
-
-  if (existsSync(whisperPath) && ttsWavBuffers.length > 0) {
-    try {
-      const stt = createModel(whisperPath, 'stt');
-      await stt.load();
-
-      for (const { phrase, wav, filename } of ttsWavBuffers) {
-        const pcm16k = wavToWhisperPcm(wav);
-        console.log(`\n  Transcribing: ${filename}`);
-        console.log(`  Original:     "${phrase}"`);
-
-        const result = await stt.transcribe(pcm16k, { language: 'en' });
-        console.log(`  Transcribed:  "${result.text.trim()}"`);
-        console.log(`  Language: ${result.language}, Segments: ${result.segments.length}`);
-
-        const text = [
-          `Source: ${filename}`,
-          `Original:      ${phrase}`,
-          `Transcription: ${result.text.trim()}`,
-          `Language: ${result.language}`,
-          `Segments:\n${JSON.stringify(result.segments, null, 2)}`,
-        ].join('\n');
-        saveTestOutput('stt', 'whisper-tiny', { lang: 'en', source: filename.replace('.wav', '') }, text, '.txt');
-      }
-
-      await stt.unload();
-      console.log('\n  STT done.\n');
-    } catch (err) {
-      console.error('  STT error:', (err as Error).message);
-    }
-  } else if (!existsSync(whisperPath)) {
-    console.log('  SKIP: No whisper model. Run: bash scripts/download-test-models.sh --whisper\n');
-  } else {
-    console.log('  SKIP: No TTS output to transcribe.\n');
   }
 
   // ─── Summary ───

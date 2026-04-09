@@ -3,16 +3,14 @@
  * Tries to crash every engine through edge cases, bad inputs, concurrent access, etc.
  */
 import * as path from 'node:path';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { loadModel, createModel, readGGUFMetadata, detectGpu } from '../src/index.ts';
-import type { LlmModel, SttModel, TtsModel, ImageModel, ChatMessage } from '../src/types.ts';
+import type { LlmModel, TtsModel, ImageModel, ChatMessage } from '../src/types.ts';
 
 const MODELS_DIR = process.env['MODELS_DIR'] || path.join(process.env['HOME'] || process.env['USERPROFILE'] || '', '.orcha', 'workspace', '.models');
 
 const LLM_MODEL = path.join(MODELS_DIR, 'qwen3-5-4b', 'Qwen3.5-4B-IQ4_NL.gguf');
-const WHISPER_MODEL = path.join('test', 'fixtures', 'whisper-tiny.bin');
 const TTS_DIR = path.join(MODELS_DIR, 'qwen3-tts');
-const TEST_AUDIO = path.join('test', 'fixtures', 'test-audio.pcm');
 
 let passed = 0;
 let failed = 0;
@@ -333,113 +331,6 @@ async function testLLM() {
   });
 }
 
-// ─── STT Crash Tests ───
-
-async function testSTT() {
-  await section('STT Engine');
-
-  if (!existsSync(WHISPER_MODEL)) {
-    console.log('  SKIP: No whisper model at ' + WHISPER_MODEL);
-    return;
-  }
-
-  await test('load STT with invalid path throws', async () => {
-    try {
-      await loadModel('/nonexistent.bin', { type: 'stt' });
-      throw new Error('Should have thrown');
-    } catch (e: any) {
-      if (e.message === 'Should have thrown') throw e;
-    }
-  });
-
-  let stt: SttModel;
-
-  await test('load STT model', async () => {
-    stt = await loadModel(WHISPER_MODEL, { type: 'stt' }) as SttModel;
-    if (!stt.loaded) throw new Error('Should be loaded');
-  });
-
-  await test('transcribe before load throws', async () => {
-    const model = createModel(WHISPER_MODEL, 'stt');
-    try {
-      await model.transcribe(Buffer.alloc(0));
-      throw new Error('Should have thrown');
-    } catch (e: any) {
-      if (e.message === 'Should have thrown') throw e;
-    }
-  });
-
-  await test('transcribe empty buffer', async () => {
-    try {
-      await stt.transcribe(Buffer.alloc(0));
-    } catch (e: any) {
-      // Error is fine, crash is not
-    }
-  });
-
-  await test('transcribe tiny buffer (1 byte)', async () => {
-    try {
-      await stt.transcribe(Buffer.alloc(1));
-    } catch (e: any) {
-      // Error is fine
-    }
-  });
-
-  await test('transcribe random noise buffer', async () => {
-    const noise = Buffer.alloc(32000 * 2); // 1 second of 16kHz 16-bit
-    for (let i = 0; i < noise.length; i++) noise[i] = Math.floor(Math.random() * 256);
-    await stt.transcribe(noise, { language: 'en' });
-  });
-
-  await test('transcribe silence', async () => {
-    const silence = Buffer.alloc(32000 * 2); // 1 second of silence
-    await stt.transcribe(silence, { language: 'en' });
-  });
-
-  if (existsSync(TEST_AUDIO)) {
-    await test('transcribe valid audio', async () => {
-      const audio = readFileSync(TEST_AUDIO);
-      const result = await stt.transcribe(audio, { language: 'en' });
-      if (!result.text && result.text !== '') throw new Error('Should have text');
-    });
-  }
-
-  await test('detectLanguage with empty buffer', async () => {
-    try {
-      await stt.detectLanguage(Buffer.alloc(0));
-    } catch (e: any) {
-      // Error fine
-    }
-  });
-
-  await test('concurrent transcriptions', async () => {
-    const noise = Buffer.alloc(32000 * 2);
-    try {
-      await Promise.all([
-        stt.transcribe(noise, { language: 'en' }),
-        stt.transcribe(noise, { language: 'en' }),
-        stt.transcribe(noise, { language: 'en' }),
-      ]);
-    } catch (e: any) {
-      // May fail but shouldn't crash
-    }
-  });
-
-  await test('double unload STT', async () => {
-    await stt.unload();
-    await stt.unload();
-  });
-
-  await test('transcribe after unload throws', async () => {
-    try {
-      await stt.transcribe(Buffer.alloc(100));
-      throw new Error('Should have thrown');
-    } catch (e: any) {
-      if (e.message === 'Should have thrown') throw e;
-    }
-  });
-}
-
 // ─── TTS Crash Tests ───
 
 async function testTTS() {
@@ -569,14 +460,12 @@ async function main() {
   console.log('========================================');
   console.log(`GPU: ${JSON.stringify(detectGpu())}`);
   console.log(`LLM model: ${existsSync(LLM_MODEL) ? 'FOUND' : 'MISSING'}`);
-  console.log(`Whisper model: ${existsSync(WHISPER_MODEL) ? 'FOUND' : 'MISSING'}`);
   console.log(`TTS dir: ${existsSync(TTS_DIR) ? 'FOUND' : 'MISSING'}`);
 
   await testGGUFReader();
   await testGpuDetection();
   await testBindingLoader();
   await testLLM();
-  await testSTT();
   await testTTS();
   await testImage();
 

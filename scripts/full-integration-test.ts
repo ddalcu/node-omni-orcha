@@ -6,11 +6,10 @@
  */
 
 import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { createModel, loadModel } from '../src/index.ts';
 import { saveTestOutput, saveVideoFrames } from '../test/test-output-helper.ts';
-import type { LlmModel, ImageModel, SttModel, TtsModel } from '../src/types.ts';
+import type { LlmModel, ImageModel, TtsModel } from '../src/types.ts';
 
 const MODELS = process.env['MODELS_DIR'] || `${process.env['HOME']}/.orcha/workspace/.models`;
 const FIXTURES = path.resolve(import.meta.dirname!, '..', 'test', 'fixtures');
@@ -118,33 +117,6 @@ if (existsSync(llmPath)) {
   });
 } else {
   skip('LLM', `Model not found: ${llmPath}`);
-}
-
-// ─── STT: Whisper Tiny ───
-
-const whisperPath = path.join(FIXTURES, 'whisper-tiny.bin');
-const audioPath = path.join(FIXTURES, 'test-audio.pcm');
-
-if (existsSync(whisperPath) && existsSync(audioPath)) {
-  await run('STT — Whisper Tiny transcription', async () => {
-    const model = createModel(whisperPath, 'stt') as SttModel;
-    await model.load();
-
-    const audio = await readFile(audioPath);
-    const result = await model.transcribe(audio, { language: 'en' });
-
-    console.log(`  Text: "${result.text.trim()}"`);
-    console.log(`  Language: ${result.language}`);
-    console.log(`  Segments: ${result.segments.length}`);
-
-    const text = `Text: ${result.text.trim()}\nLanguage: ${result.language}\nSegments:\n${JSON.stringify(result.segments, null, 2)}`;
-    const out = saveTestOutput('stt', 'whisper-tiny', { lang: result.language }, text, '.txt');
-    console.log(`  Output: ${out}`);
-
-    await model.unload();
-  });
-} else {
-  skip('STT', `Missing: ${!existsSync(whisperPath) ? 'whisper-tiny.bin' : 'test-audio.pcm'}`);
 }
 
 // ─── TTS: Qwen3-TTS ───

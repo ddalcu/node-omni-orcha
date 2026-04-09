@@ -7,12 +7,11 @@ import * as path from 'node:path';
 import { existsSync } from 'node:fs';
 import { loadModel, createModel, detectGpu } from '../src/index.ts';
 import { loadBinding } from '../src/binding-loader.ts';
-import type { LlmModel, ImageModel, SttModel, TtsModel } from '../src/types.ts';
+import type { LlmModel, ImageModel, TtsModel } from '../src/types.ts';
 
 const MODELS_DIR = process.env['MODELS_DIR'] || path.join(process.env['HOME'] || process.env['USERPROFILE'] || '', '.orcha', 'workspace', '.models');
 const LLM_MODEL = path.join(MODELS_DIR, 'qwen3-5-4b', 'Qwen3.5-4B-IQ4_NL.gguf');
 const EMBED_MODEL = path.join(MODELS_DIR, 'nomic-embed-text-v1-5-q4_k_m', 'nomic-embed-text-v1.5.Q4_K_M.gguf');
-const WHISPER_MODEL = path.join('test', 'fixtures', 'whisper-tiny.bin');
 const TTS_DIR = path.join(MODELS_DIR, 'qwen3-tts');
 const FLUX_DIR = path.join(MODELS_DIR, 'flux2-klein');
 const FLUX_MODEL = path.join(FLUX_DIR, 'flux-2-klein-4b-Q4_K_M.gguf');
@@ -292,18 +291,6 @@ async function testBackendIdempotency() {
 
 async function testAllModelReload() {
   console.log('\n=== All Model Types Reload ===');
-
-  if (existsSync(WHISPER_MODEL)) {
-    await test('STT load → use → unload → reload → use', async () => {
-      const model = createModel(WHISPER_MODEL, 'stt');
-      await model.load();
-      await model.transcribe(Buffer.alloc(16000 * 2), { language: 'en' });
-      await model.unload();
-      await model.load();
-      await model.transcribe(Buffer.alloc(16000 * 2), { language: 'en' });
-      await model.unload();
-    });
-  }
 
   if (existsSync(TTS_DIR)) {
     await test('TTS load → use → unload → reload → use', async () => {

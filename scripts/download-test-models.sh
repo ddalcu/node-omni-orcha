@@ -3,8 +3,7 @@
 # All models go to ~/.orcha/workspace/.models/
 #
 # Usage:
-#   bash scripts/download-test-models.sh           # LLM + STT (basics, ~1GB)
-#   bash scripts/download-test-models.sh --kokoro  # + Kokoro TTS (~184MB, fast)
+#   bash scripts/download-test-models.sh           # LLM (basics, ~1GB)
 #   bash scripts/download-test-models.sh --tts     # + Qwen3-TTS (~1.2GB, voice cloning)
 #   bash scripts/download-test-models.sh --image   # + FLUX 2 Klein (~5GB)
 #   bash scripts/download-test-models.sh --video   # + WAN 2.2 5B (~5GB)
@@ -14,8 +13,7 @@
 set -e
 
 MODELS_DIR="${MODELS_DIR:-$HOME/.orcha/workspace/.models}"
-FIXTURES_DIR="$(dirname "$0")/../test/fixtures"
-mkdir -p "$MODELS_DIR" "$FIXTURES_DIR"
+mkdir -p "$MODELS_DIR"
 
 download_if_missing() {
   local url="$1"
@@ -41,7 +39,7 @@ has_flag() {
 ALL=false
 if has_flag "--all" "$@"; then ALL=true; fi
 
-# ─── Always: LLM + STT (basics) ───
+# ─── Always: LLM ───
 
 echo "=== LLM: TinyLlama 1.1B (~250MB) ==="
 download_if_missing \
@@ -60,59 +58,6 @@ download_if_missing \
   "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/mmproj-F16.gguf" \
   "$MODELS_DIR/qwen3-5-4b/mmproj-F16.gguf" \
   "Qwen3.5-4B mmproj F16 (vision encoder)"
-
-echo ""
-echo "=== STT: Whisper Tiny (~75MB) ==="
-download_if_missing \
-  "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin" \
-  "$MODELS_DIR/whisper-tiny/whisper-tiny.bin" \
-  "Whisper tiny"
-
-# Generate test audio (silence) for STT tests
-if [ ! -f "$FIXTURES_DIR/test-audio.pcm" ]; then
-  echo "Generating silent test PCM (16kHz, 16-bit, mono, 1 second)..."
-  node -e "
-const fs = require('fs');
-const buf = Buffer.alloc(32000);
-fs.writeFileSync('$FIXTURES_DIR/test-audio.pcm', buf);
-" 2>/dev/null || python3 -c "
-import struct, sys
-sys.stdout.buffer.write(struct.pack('<' + 'h' * 16000, *([0] * 16000)))
-" > "$FIXTURES_DIR/test-audio.pcm"
-  echo "Generated: $FIXTURES_DIR/test-audio.pcm"
-fi
-
-# ─── Kokoro TTS: Kokoro-82M ONNX (~184MB, fast preset voices) ───
-
-if $ALL || has_flag "--kokoro" "$@"; then
-  echo ""
-  echo "=== Kokoro TTS: Kokoro-82M FP16 (~190MB total) ==="
-  mkdir -p "$MODELS_DIR/kokoro"
-  SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-
-  # ONNX model (from onnx-community, not hexgrad — pre-optimized for ONNX Runtime)
-  download_if_missing \
-    "https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/resolve/main/onnx/model_fp16.onnx" \
-    "$MODELS_DIR/kokoro/kokoro-v1.0.fp16.onnx" \
-    "Kokoro-82M FP16 ONNX (~163MB)"
-
-  # Voice embeddings — downloads individual .bin files and packs into voices.bin
-  if [ ! -f "$MODELS_DIR/kokoro/voices.bin" ]; then
-    echo "Downloading and packing voice embeddings (~27MB)..."
-    node "$SCRIPT_DIR/download-kokoro-voices.ts" "$MODELS_DIR/kokoro"
-  else
-    echo "Already exists: $MODELS_DIR/kokoro/voices.bin"
-  fi
-
-  # Phoneme dictionary (generated from CMU Pronouncing Dictionary)
-  DICT_BIN="$MODELS_DIR/kokoro/phoneme_dict.bin"
-  if [ ! -f "$DICT_BIN" ]; then
-    echo "Generating phoneme dictionary from CMU dict..."
-    node "$SCRIPT_DIR/generate-phoneme-dict.ts" "$DICT_BIN"
-  else
-    echo "Already exists: $DICT_BIN"
-  fi
-fi
 
 # ─── TTS: Qwen3-TTS 0.6B (~1.2GB, voice cloning) ───
 
@@ -207,7 +152,7 @@ fi
 echo ""
 echo "Done. Models directory: $MODELS_DIR"
 echo ""
-for subdir in tinyllama qwen3-5-4b whisper-tiny kokoro qwen3-tts flux2-klein wan22-5b qwen2-vl-2b; do
+for subdir in tinyllama qwen3-5-4b qwen3-tts flux2-klein wan22-5b qwen2-vl-2b; do
   if [ -d "$MODELS_DIR/$subdir" ]; then
     echo "$subdir/:"
     ls -lhS "$MODELS_DIR/$subdir/" 2>/dev/null || true
@@ -219,11 +164,10 @@ echo ""
 echo "Run tests:"
 echo "  npm test                                  # unit + integration"
 echo "  node scripts/full-integration-test.ts     # all engines"
-echo "  node scripts/samuel-jackson-test.ts       # LLM + TTS + STT + Image"
+echo "  node scripts/samuel-jackson-test.ts       # LLM + TTS + Image"
 echo ""
 if ! $ALL; then
   echo "Download more:"
-  has_flag "--kokoro" "$@" || echo "  bash scripts/download-test-models.sh --kokoro # Kokoro TTS (~184MB, fast)"
   has_flag "--tts"    "$@" || echo "  bash scripts/download-test-models.sh --tts    # Qwen3-TTS (~1.2GB, voice clone)"
   has_flag "--image"  "$@" || echo "  bash scripts/download-test-models.sh --image  # FLUX 2 Klein (~5GB)"
   has_flag "--video"  "$@" || echo "  bash scripts/download-test-models.sh --video  # WAN 2.2 5B (~5GB)"

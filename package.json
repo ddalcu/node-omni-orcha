@@ -1,7 +1,7 @@
 {
   "name": "@agent-orcha/node-omni-orcha",
   "version": "0.1.0",
-  "description": "Unified native Node.js bindings — single omni.node for LLM, STT, TTS, and Image/Video generation",
+  "description": "Unified native Node.js bindings — single omni.node for LLM, TTS, and Image/Video generation",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -54,8 +54,8 @@
     "src/"
   ],
   "keywords": [
-    "llm", "tts", "stt", "whisper", "llama", "stable-diffusion", "flux",
-    "qwen", "qwen3-tts", "voice-cloning", "speech-to-text", "text-to-speech",
+    "llm", "tts", "llama", "stable-diffusion", "flux",
+    "qwen", "qwen3-tts", "voice-cloning", "text-to-speech",
     "image-generation", "ggml", "gguf", "native", "n-api", "metal", "cuda"
   ],
   "license": "MIT",

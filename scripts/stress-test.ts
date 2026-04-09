@@ -8,22 +8,19 @@ import { existsSync } from 'node:fs';
 import * as path from 'node:path';
 import { loadModel, createModel, readGGUFMetadata, detectGpu } from '../src/index.ts';
 import { loadBinding } from '../src/binding-loader.ts';
-import type { LlmModel, SttModel, TtsModel, ImageModel } from '../src/types.ts';
+import type { LlmModel, TtsModel, ImageModel } from '../src/types.ts';
 
 const MODELS_DIR = process.env['MODELS_DIR'] || path.join(process.env['HOME'] || '', '.orcha', 'workspace', '.models');
 const LLM_MODEL = path.join(MODELS_DIR, 'qwen3-5-4b', 'Qwen3.5-4B-IQ4_NL.gguf');
 const EMBED_MODEL = path.join(MODELS_DIR, 'nomic-embed-text-v1-5-q4_k_m', 'nomic-embed-text-v1.5.Q4_K_M.gguf');
 const TTS_DIR = path.join(MODELS_DIR, 'qwen3-tts');
-const WHISPER_MODEL = path.join(MODELS_DIR, 'whisper-tiny', 'whisper-tiny.bin');
 const FLUX_MODEL = path.join(MODELS_DIR, 'flux2-klein', 'flux-2-klein-4b-Q4_K_M.gguf');
 const FLUX_LLM = path.join(MODELS_DIR, 'flux2-klein', 'Qwen3-4B-Q4_K_M.gguf');
 const FLUX_VAE = path.join(MODELS_DIR, 'flux2-klein', 'flux2-vae.safetensors');
-const FIXTURES_DIR = path.join(import.meta.dirname, '..', 'test', 'fixtures');
 
 const hasLlm = existsSync(LLM_MODEL);
 const hasEmbed = existsSync(EMBED_MODEL);
 const hasTts = existsSync(path.join(TTS_DIR, 'qwen3-tts-0.6b-f16.gguf'));
-const hasStt = existsSync(WHISPER_MODEL);
 const hasFlux = existsSync(FLUX_MODEL) && existsSync(FLUX_LLM) && existsSync(FLUX_VAE);
 
 let passed = 0;
@@ -98,7 +95,6 @@ describe('STRESS: TypeScript layer validation', () => {
     const binding = loadBinding();
     assert.ok(binding);
     assert.equal(typeof binding['createLlmContext'], 'function');
-    assert.equal(typeof binding['createSttContext'], 'function');
     assert.equal(typeof binding['createTtsContext'], 'function');
     assert.equal(typeof binding['createImageContext'], 'function');
     log('OK', 'loadBinding returns valid binding with all context creators');
@@ -127,13 +123,6 @@ describe('STRESS: Native binding direct calls', () => {
       }),
     );
     log('OK', 'createLlmContext with non-existent model rejects');
-  });
-
-  it('createSttContext with non-existent model rejects', async () => {
-    await assert.rejects(
-      () => (binding['createSttContext'] as Function)('/nonexistent/whisper.bin'),
-    );
-    log('OK', 'createSttContext with non-existent model rejects');
   });
 
   it('createTtsContext with non-existent path rejects', async () => {
@@ -639,103 +628,7 @@ describe('STRESS: TTS edge cases', { skip: !hasTts ? 'No TTS model' : undefined 
 });
 
 // ═══════════════════════════════════════════════════════════════
-// 8. STT (Whisper) edge cases
-// ═══════════════════════════════════════════════════════════════
-
-describe('STRESS: STT edge cases', { skip: !hasStt ? 'No Whisper model' : undefined }, () => {
-  let model: SttModel;
-
-  before(async () => {
-    model = createModel(WHISPER_MODEL, 'stt');
-    await model.load();
-  });
-
-  after(async () => {
-    await model?.unload();
-  });
-
-  it('loads and reports as loaded', () => {
-    assert.equal(model.type, 'stt');
-    assert.equal(model.loaded, true);
-    log('OK', 'STT model loaded');
-  });
-
-  it('transcribe with empty buffer (0 bytes)', async () => {
-    try {
-      const result = await model.transcribe(Buffer.alloc(0));
-      log('OK', `transcribe(empty) returned: "${result.text.slice(0, 50)}"`);
-    } catch (err: any) {
-      log('OK', `transcribe(empty) threw: ${err.message?.slice(0, 80)}`);
-    }
-  });
-
-  it('transcribe with tiny buffer (10 bytes)', async () => {
-    try {
-      const result = await model.transcribe(Buffer.alloc(10));
-      log('OK', `transcribe(10 bytes) returned: "${result.text.slice(0, 50)}"`);
-    } catch (err: any) {
-      log('OK', `transcribe(10 bytes) threw: ${err.message?.slice(0, 80)}`);
-    }
-  });
-
-  it('transcribe with silence (1 second)', async () => {
-    // 16kHz, 16-bit mono = 32000 bytes per second
-    const silence = Buffer.alloc(32000);
-    const result = await model.transcribe(silence, { language: 'en' });
-    assert.equal(typeof result.text, 'string');
-    assert.equal(typeof result.language, 'string');
-    assert.ok(Array.isArray(result.segments));
-    log('OK', `transcribe(silence) returned lang="${result.language}", text="${result.text.trim().slice(0, 50)}"`);
-  });
-
-  it('transcribe with random noise', async () => {
-    const noise = Buffer.alloc(32000);
-    for (let i = 0; i < noise.length; i += 2) {
-      noise.writeInt16LE(Math.floor(Math.random() * 65536) - 32768, i);
-    }
-    const result = await model.transcribe(noise, { language: 'en' });
-    assert.equal(typeof result.text, 'string');
-    log('OK', `transcribe(noise) returned: "${result.text.trim().slice(0, 50)}"`);
-  });
-
-  it('detectLanguage with silence', async () => {
-    const silence = Buffer.alloc(32000);
-    const lang = await model.detectLanguage(silence);
-    assert.equal(typeof lang, 'string');
-    assert.ok(lang.length > 0);
-    log('OK', `detectLanguage(silence) returned: "${lang}"`);
-  });
-
-  it('transcribe with test audio fixture', { skip: !existsSync(path.join(FIXTURES_DIR, 'test-audio.pcm')) ? 'No test audio' : undefined }, async () => {
-    const { readFile } = await import('node:fs/promises');
-    const audio = await readFile(path.join(FIXTURES_DIR, 'test-audio.pcm'));
-    const result = await model.transcribe(audio, { language: 'en' });
-    assert.equal(typeof result.text, 'string');
-    log('OK', `transcribe(fixture) returned: "${result.text.trim().slice(0, 50)}"`);
-  });
-
-  it('double unload STT is safe', async () => {
-    const stt = createModel(WHISPER_MODEL, 'stt');
-    await stt.load();
-    await stt.unload();
-    await stt.unload();
-    log('OK', 'STT double unload is safe');
-  });
-
-  it('transcribe after unload throws', async () => {
-    const stt = createModel(WHISPER_MODEL, 'stt');
-    await stt.load();
-    await stt.unload();
-    await assert.rejects(
-      () => stt.transcribe(Buffer.alloc(32000)),
-      /not loaded/,
-    );
-    log('OK', 'transcribe after unload throws');
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════
-// 9. Image (FLUX) edge cases
+// 8. Image (FLUX) edge cases
 // ═══════════════════════════════════════════════════════════════
 
 describe('STRESS: Image (FLUX) edge cases', { skip: !hasFlux ? 'No FLUX model' : undefined }, () => {
@@ -795,7 +688,7 @@ describe('STRESS: Image (FLUX) edge cases', { skip: !hasFlux ? 'No FLUX model' :
 });
 
 // ═══════════════════════════════════════════════════════════════
-// 10. GGUF reader edge cases
+// 9. GGUF reader edge cases
 // ═══════════════════════════════════════════════════════════════
 
 describe('STRESS: GGUF reader edge cases', () => {
@@ -822,7 +715,7 @@ describe('STRESS: GGUF reader edge cases', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════
-// 9. Rapid load/unload cycling
+// 10. Rapid load/unload cycling
 // ═══════════════════════════════════════════════════════════════
 
 describe('STRESS: Rapid load/unload cycling', { skip: !hasEmbed ? 'No embedding model' : undefined }, () => {

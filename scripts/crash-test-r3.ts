@@ -6,14 +6,13 @@
 import * as path from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import { loadModel, createModel, detectGpu } from '../src/index.ts';
-import type { LlmModel, SttModel, TtsModel, ImageModel } from '../src/types.ts';
+import type { LlmModel, TtsModel, ImageModel } from '../src/types.ts';
 
 const MODELS_DIR = process.env['MODELS_DIR'] || path.join(process.env['HOME'] || process.env['USERPROFILE'] || '', '.orcha', 'workspace', '.models');
 
 // Model paths
 const LLM_MODEL = path.join(MODELS_DIR, 'qwen3-5-4b', 'Qwen3.5-4B-IQ4_NL.gguf');
 const EMBED_MODEL = path.join(MODELS_DIR, 'nomic-embed-text-v1-5-q4_k_m', 'nomic-embed-text-v1.5.Q4_K_M.gguf');
-const WHISPER_MODEL = path.join('test', 'fixtures', 'whisper-tiny.bin');
 const TTS_DIR = path.join(MODELS_DIR, 'qwen3-tts');
 const SAMUEL_WAV = path.join('test', 'fixtures', 'Samuel.wav');
 const TEST_AUDIO = path.join('test', 'fixtures', 'test-audio.pcm');
@@ -362,43 +361,6 @@ async function testLoadUnloadRaces() {
   });
 }
 
-// ─── STT + TTS roundtrip ───
-
-async function testSTTTTSRoundtrip() {
-  console.log('\n=== STT + TTS Roundtrip ===');
-
-  const hasTts = existsSync(TTS_DIR);
-  const hasStt = existsSync(WHISPER_MODEL);
-
-  if (!hasTts || !hasStt) {
-    console.log('  SKIP: Need both TTS and STT models');
-    return;
-  }
-
-  await test('TTS → STT roundtrip', async () => {
-    const tts = await loadModel(TTS_DIR, { type: 'tts' }) as TtsModel;
-    const stt = await loadModel(WHISPER_MODEL, { type: 'stt' }) as SttModel;
-
-    // Generate speech
-    const wav = await tts.speak('Hello world this is a test.');
-
-    // The WAV output from TTS is 24kHz. Whisper expects 16kHz 16-bit PCM.
-    // We can't easily resample here, but we can at least pass it and see
-    // if it crashes or handles gracefully.
-    // Skip the 44-byte WAV header to get raw PCM
-    const pcm = wav.subarray(44);
-
-    try {
-      const result = await stt.transcribe(pcm, { language: 'en' });
-      // May get garbage since sample rate mismatch, but shouldn't crash
-    } catch (e: any) {
-      // Error is fine
-    }
-
-    await Promise.all([tts.unload(), stt.unload()]);
-  });
-}
-
 // ─── Run all ───
 
 async function main() {
@@ -412,7 +374,6 @@ async function main() {
   await testTTSVoiceCloning();
   await testImageGeneration();
   await testLoadUnloadRaces();
-  await testSTTTTSRoundtrip();
 
   console.log('\n========================================');
   console.log(`  RESULTS: ${passed} passed, ${failed} failed`);

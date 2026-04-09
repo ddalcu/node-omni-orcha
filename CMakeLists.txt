@@ -85,22 +85,6 @@ execute_process(
 )
 string(REPLACE "\"" "" NODE_ADDON_API_DIR ${NODE_ADDON_API_DIR})
 
-# --- Whisper (STT engine) ---
-# Compile whisper.cpp directly against our shared ggml
-add_library(whisper STATIC
-  engine/stt/whisper.cpp
-)
-target_include_directories(whisper PUBLIC
-  ${CMAKE_SOURCE_DIR}/engine/stt
-)
-target_include_directories(whisper PRIVATE
-  ${CMAKE_SOURCE_DIR}/engine/ggml/include
-)
-target_link_libraries(whisper PRIVATE ggml)
-target_compile_features(whisper PRIVATE cxx_std_17)
-target_compile_definitions(whisper PRIVATE WHISPER_VERSION="1.0.0")
-set_target_properties(whisper PROPERTIES POSITION_INDEPENDENT_CODE ON)
-
 # --- Qwen3-TTS (TTS engine) ---
 # Compile qwen3-tts sources directly against our shared ggml
 add_library(qwen3_tts STATIC
@@ -207,49 +191,16 @@ if(MSVC)
     _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING
   )
   target_compile_definitions(qwen3_tts PRIVATE _CRT_SECURE_NO_WARNINGS _USE_MATH_DEFINES)
-  target_compile_definitions(whisper PRIVATE _CRT_SECURE_NO_WARNINGS)
   target_compile_definitions(mtmd PRIVATE _CRT_SECURE_NO_WARNINGS _USE_MATH_DEFINES)
-endif()
-
-# --- Kokoro TTS (ONNX Runtime, no external dependencies) ---
-# Optional: only built if ONNX Runtime is downloaded
-set(KOKORO_ENABLED OFF)
-set(ONNXRUNTIME_DIR "${CMAKE_SOURCE_DIR}/engine/vendor/onnxruntime")
-
-if(EXISTS "${ONNXRUNTIME_DIR}/include/onnxruntime_c_api.h")
-  set(KOKORO_ENABLED ON)
-  message(STATUS "[omni] Kokoro TTS: ENABLED")
-  message(STATUS "[omni]   ONNX Runtime: ${ONNXRUNTIME_DIR}")
-
-  add_library(kokoro STATIC
-    engine/kokoro/kokoro.cpp
-    engine/kokoro/phonemize.cpp
-  )
-  target_include_directories(kokoro PUBLIC
-    ${CMAKE_SOURCE_DIR}/engine/kokoro
-  )
-  target_include_directories(kokoro PRIVATE
-    ${ONNXRUNTIME_DIR}/include
-  )
-  target_compile_features(kokoro PRIVATE cxx_std_17)
-  set_target_properties(kokoro PROPERTIES POSITION_INDEPENDENT_CODE ON)
-  target_compile_definitions(kokoro PRIVATE KOKORO_ENABLED)
-else()
-  message(STATUS "[omni] Kokoro TTS: DISABLED (run: bash scripts/download-onnxruntime.sh)")
 endif()
 
 # --- Unified omni.node addon ---
 set(OMNI_SOURCES
   cpp/omni_binding.cpp
   cpp/llm_context.cpp
-  cpp/stt_context.cpp
   cpp/tts_context.cpp
   cpp/image_context.cpp
 )
-
-if(KOKORO_ENABLED)
-  list(APPEND OMNI_SOURCES cpp/kokoro_context.cpp)
-endif()
 
 add_library(omni SHARED ${OMNI_SOURCES} ${CMAKE_JS_SRC})
 set_target_properties(omni PROPERTIES
@@ -270,66 +221,20 @@ target_include_directories(omni PRIVATE
   ${CMAKE_SOURCE_DIR}/cpp/common
   ${CMAKE_SOURCE_DIR}/engine/include
   ${CMAKE_SOURCE_DIR}/engine/common
-  ${CMAKE_SOURCE_DIR}/engine/stt
   ${CMAKE_SOURCE_DIR}/engine/tts
   ${CMAKE_SOURCE_DIR}/engine/diffusion
   ${CMAKE_SOURCE_DIR}/engine/vendor/stb
   ${CMAKE_SOURCE_DIR}/engine/mtmd
 )
 
-if(KOKORO_ENABLED)
-  target_include_directories(omni PRIVATE
-    ${CMAKE_SOURCE_DIR}/engine/kokoro
-    ${ONNXRUNTIME_DIR}/include
-  )
-endif()
-
 target_link_libraries(omni PRIVATE
   ${CMAKE_JS_LIB}
   llama
   common
   mtmd
-  whisper
   qwen3_tts
   stable-diffusion
 )
-
-if(KOKORO_ENABLED)
-  target_link_libraries(omni PRIVATE kokoro)
-  # Link ONNX Runtime shared library
-  if(APPLE)
-    target_link_libraries(omni PRIVATE "${ONNXRUNTIME_DIR}/lib/libonnxruntime.dylib")
-    set_target_properties(omni PROPERTIES
-      BUILD_RPATH "@loader_path;${ONNXRUNTIME_DIR}/lib"
-    )
-    # cmake-js doesn't run the install step, so INSTALL_RPATH is never applied.
-    # BUILD_RPATH includes both @loader_path and the absolute vendor path.
-    # Post-build: strip the absolute path so the shipped binary only has @loader_path.
-    add_custom_command(TARGET omni POST_BUILD
-      COMMAND install_name_tool -delete_rpath "${ONNXRUNTIME_DIR}/lib" "$<TARGET_FILE:omni>" || true
-      # Copy dylib next to omni.node so @loader_path works for local dev too
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${ONNXRUNTIME_DIR}/lib/libonnxruntime.1.22.0.dylib"
-        "$<TARGET_FILE_DIR:omni>/libonnxruntime.1.22.0.dylib"
-    )
-  elseif(MSVC)
-    target_link_libraries(omni PRIVATE "${ONNXRUNTIME_DIR}/lib/onnxruntime.lib")
-  else()
-    target_link_libraries(omni PRIVATE "${ONNXRUNTIME_DIR}/lib/libonnxruntime.so")
-    set_target_properties(omni PROPERTIES
-      BUILD_RPATH "$ORIGIN;${ONNXRUNTIME_DIR}/lib"
-    )
-    # Same fix for Linux — strip the absolute vendor path, keep only $ORIGIN
-    # and copy the .so next to omni.node for local dev
-    add_custom_command(TARGET omni POST_BUILD
-      COMMAND patchelf --set-rpath "$$ORIGIN" "$<TARGET_FILE:omni>" 2>/dev/null || true
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${ONNXRUNTIME_DIR}/lib/libonnxruntime.so"
-        "$<TARGET_FILE_DIR:omni>/libonnxruntime.so" 2>/dev/null || true
-    )
-  endif()
-  target_compile_definitions(omni PRIVATE KOKORO_ENABLED)
-endif()
 
 target_compile_definitions(omni PRIVATE
   NAPI_VERSION=9

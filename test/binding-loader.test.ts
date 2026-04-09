@@ -7,7 +7,6 @@ describe('loadBinding', () => {
     const binding = loadBinding();
     assert.ok(binding, 'Binding should be loaded');
     assert.equal(typeof binding['createLlmContext'], 'function', 'Should export createLlmContext');
-    assert.equal(typeof binding['createSttContext'], 'function', 'Should export createSttContext');
     assert.equal(typeof binding['createTtsContext'], 'function', 'Should export createTtsContext');
     assert.equal(typeof binding['createImageContext'], 'function', 'Should export createImageContext');
   });

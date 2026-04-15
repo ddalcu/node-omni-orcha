@@ -162,6 +162,7 @@ add_library(stable-diffusion STATIC
   engine/diffusion/stable-diffusion.cpp
   engine/diffusion/model.cpp
   engine/diffusion/name_conversion.cpp
+  engine/diffusion/sample-cache.cpp
   engine/diffusion/tokenize_util.cpp
   engine/diffusion/upscaler.cpp
   engine/diffusion/util.cpp

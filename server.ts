@@ -282,6 +282,7 @@ async function handleChat(req: IncomingMessage, res: ServerResponse) {
     for await (const chunk of models.llm.stream(messages, {
       temperature: body.temperature ?? 0.7,
       maxTokens: body.maxTokens ?? 2048,
+      thinkingBudget: body.thinkingBudget ?? 0,
     })) {
       if (chunk.content) {
         res.write(`data: ${JSON.stringify({ content: chunk.content })}\n\n`);
@@ -329,10 +330,13 @@ async function handleImage(req: IncomingMessage, res: ServerResponse) {
 
   try {
     const png = await models.image.generate(prompt, {
-      width: body.width ?? 512,
-      height: body.height ?? 512,
-      steps: body.steps,
-      cfgScale: body.cfgScale ?? 1.0,
+      width: body.width ?? 1024,
+      height: body.height ?? 1024,
+      steps: body.steps ?? 4,
+      cfgScale: body.cfgScale ?? 1.5,
+      strength: body.strength ?? 1.0,
+      sampleMethod: body.sampleMethod ?? 'euler',
+      scheduler: body.scheduler ?? 'discrete',
       seed: body.seed,
     });
     res.writeHead(200, {
@@ -672,9 +676,12 @@ const HTML = /* html */ `<!DOCTYPE html>
     <button class="btn" id="image-send">Generate</button>
   </div>
   <div class="options-row">
-    <label>W <input type="text" id="image-w" placeholder="512"></label>
-    <label>H <input type="text" id="image-h" placeholder="512"></label>
-    <label>Steps <input type="text" id="image-steps" placeholder="20"></label>
+    <label>Resolution <select id="image-res"><option value="1024x1024" selected>1024×1024</option><option value="896x1152">896×1152</option><option value="1152x896">1152×896</option><option value="1536x1024">1536×1024</option></select></label>
+    <label>Steps <input type="number" id="image-steps" min="1" max="50" value="4"></label>
+    <label>Sampler <select id="image-sampler"><option value="euler" selected>Euler</option><option value="euler_a">Euler A</option><option value="heun">Heun</option><option value="dpm2">DPM2</option><option value="dpmpp2s_a">DPM++ 2S A</option><option value="dpmpp2m">DPM++ 2M</option><option value="dpmpp2mv2">DPM++ 2M v2</option><option value="lcm">LCM</option></select></label>
+    <label>Scheduler <select id="image-scheduler"><option value="discrete">Normal</option><option value="karras">Karras</option><option value="exponential">Exponential</option><option value="ays">AYS</option><option value="sgm_uniform">SGM Uniform</option><option value="simple">Simple</option></select></label>
+    <label>CFG <input type="number" id="image-cfg" min="0" max="30" step="0.5" value="1.5"></label>
+    <label>Denoise <input type="number" id="image-denoise" min="0" max="1" step="0.05" value="1.0"></label>
   </div>
   <div class="progress" id="image-progress"><div class="progress-bar"></div></div>
   <div class="output" id="image-output"></div>
@@ -1133,14 +1140,19 @@ document.getElementById('image-send').addEventListener('click', async () => {
   document.getElementById('image-output').innerHTML = '';
 
   try {
+    const [iw, ih] = document.getElementById('image-res').value.split('x').map(Number);
     const res = await fetch('/api/image', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         prompt,
-        width: parseInt(document.getElementById('image-w').value) || undefined,
-        height: parseInt(document.getElementById('image-h').value) || undefined,
-        steps: parseInt(document.getElementById('image-steps').value) || undefined,
+        width: iw,
+        height: ih,
+        steps: parseInt(document.getElementById('image-steps').value) || 4,
+        sampleMethod: document.getElementById('image-sampler').value,
+        scheduler: document.getElementById('image-scheduler').value,
+        cfgScale: parseFloat(document.getElementById('image-cfg').value) || 1.5,
+        strength: parseFloat(document.getElementById('image-denoise').value) || 1.0,
       }),
     });
     if (!res.ok) {

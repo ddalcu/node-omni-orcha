@@ -38,14 +38,21 @@ set(LLAMA_BUILD_COMMON ON CACHE BOOL "" FORCE)
 # Disable BLAS to avoid needing ggml-blas backend
 set(GGML_BLAS OFF CACHE BOOL "" FORCE)
 
-# Disable GGML_NATIVE so published binaries are portable across x86_64 CPUs.
-# With NATIVE=OFF, ggml enables AVX/AVX2/F16C/FMA by default — safe for any
-# CPU from ~2013 onward. NATIVE=ON compiles with -march=native which can emit
-# AVX-512 or other instructions that crash on older CPUs (e.g. Illegal instruction).
-set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
+# GGML_NATIVE: ON for local dev (fastest code for this CPU), OFF for portable releases.
+option(NATIVE_BUILD "Use -march=native and GPU-specific SASS for fast local builds" OFF)
+if(NATIVE_BUILD)
+  set(GGML_NATIVE ON CACHE BOOL "" FORCE)
+  message(STATUS "[omni] Native build: -march=native enabled")
+else()
+  set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
+endif()
 
-# Link-time optimization for smaller, faster binaries
-set(GGML_LTO ON CACHE BOOL "" FORCE)
+# LTO: off for native/dev builds (faster compile), on for releases
+if(NATIVE_BUILD)
+  set(GGML_LTO OFF CACHE BOOL "" FORCE)
+else()
+  set(GGML_LTO ON CACHE BOOL "" FORCE)
+endif()
 
 # sd.cpp requires GGML_MAX_NAME >= 128
 add_compile_definitions(GGML_MAX_NAME=128)
@@ -63,6 +70,10 @@ elseif(GPU_BACKEND STREQUAL "cuda")
     # 121-virtual provides PTX forward compat for GB10 (DIGITS) and future architectures
     set(CMAKE_CUDA_ARCHITECTURES "75-real;80-real;86-real;89-real;120-real;121-virtual" CACHE STRING "" FORCE)
     message(STATUS "[omni] CUDA release build: all architectures (75-120 SASS + 121 PTX)")
+  elseif(NATIVE_BUILD)
+    # Native SASS only — fastest compile, no JIT, but only runs on this exact GPU
+    set(CMAKE_CUDA_ARCHITECTURES "native" CACHE STRING "" FORCE)
+    message(STATUS "[omni] CUDA native build: SASS for local GPU only")
   else()
     # PTX-only for fast dev builds — JIT-compiles on any GPU >= sm_75
     set(CMAKE_CUDA_ARCHITECTURES "75-virtual" CACHE STRING "" FORCE)
@@ -162,6 +173,7 @@ add_library(stable-diffusion STATIC
   engine/diffusion/stable-diffusion.cpp
   engine/diffusion/model.cpp
   engine/diffusion/name_conversion.cpp
+  engine/diffusion/sample-cache.cpp
   engine/diffusion/tokenize_util.cpp
   engine/diffusion/upscaler.cpp
   engine/diffusion/util.cpp

@@ -208,7 +208,7 @@ public:
     std::string prompt,
     std::string negative_prompt,
     int width, int height, int steps,
-    float cfg_scale, int64_t seed,
+    float cfg_scale, float strength, int64_t seed,
     sample_method_t sample_method,
     scheduler_t scheduler, int clip_skip,
     bool scheduler_specified,
@@ -220,6 +220,7 @@ public:
       negative_prompt_(std::move(negative_prompt)),
       width_(width), height_(height),
       steps_(steps), cfg_scale_(cfg_scale),
+      strength_(strength),
       seed_(seed), sample_method_(sample_method),
       scheduler_(scheduler), clip_skip_(clip_skip),
       scheduler_specified_(scheduler_specified),
@@ -239,6 +240,7 @@ protected:
     gen_params.seed = seed_;
     gen_params.batch_count = 1;
     gen_params.clip_skip = clip_skip_;
+    gen_params.strength = strength_;
     gen_params.sample_params.guidance.txt_cfg = cfg_scale_;
     gen_params.sample_params.sample_method = sample_method_;
     gen_params.sample_params.sample_steps = steps_;
@@ -299,6 +301,7 @@ private:
   std::string negative_prompt_;
   int width_, height_, steps_;
   float cfg_scale_;
+  float strength_;
   int64_t seed_;
   sample_method_t sample_method_;
   scheduler_t scheduler_;
@@ -325,6 +328,7 @@ Napi::Value ImageContext::Generate(const Napi::CallbackInfo& info) {
 
   int width = 512, height = 512, steps = 20;
   float cfgScale = 7.0f;
+  float strength = 1.0f;
   int64_t seed = -1;
   std::string negativePrompt = "";
   sample_method_t sampleMethod = EULER_SAMPLE_METHOD;
@@ -338,6 +342,7 @@ Napi::Value ImageContext::Generate(const Napi::CallbackInfo& info) {
     height = getInt32Option(opts, "height", 512);
     steps = getInt32Option(opts, "steps", 20);
     cfgScale = (float)getDoubleOption(opts, "cfgScale", 7.0);
+    strength = (float)getDoubleOption(opts, "strength", 1.0);
     clipSkip = getInt32Option(opts, "clipSkip", -1);
 
     if (opts.Has("seed") && opts.Get("seed").IsNumber())
@@ -363,7 +368,7 @@ Napi::Value ImageContext::Generate(const Napi::CallbackInfo& info) {
 
   auto* worker = new GenerateWorker(
     env, ctx_, std::move(prompt), std::move(negativePrompt),
-    width, height, steps, cfgScale, seed,
+    width, height, steps, cfgScale, strength, seed,
     sampleMethod, scheduler, clipSkip, schedulerSpecified, busy_
   );
   worker->Queue();

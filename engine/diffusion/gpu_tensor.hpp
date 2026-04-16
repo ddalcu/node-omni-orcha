@@ -13,6 +13,10 @@
 #include <memory>
 #include <vector>
 
+// Maximum graph size for the tiny compute graphs used by GpuTensor ops.
+// Must match the size passed to ggml_graph_overhead_custom in make_graph_ctx.
+static constexpr size_t GPU_TENSOR_GRAPH_SIZE = 16;
+
 // A pool of same-shaped ggml tensors on a GPU backend, used for
 // sampling-loop scratch data.  Tensors are acquired / released by
 // GpuTensor's constructors and destructor so the pool never leaks.
@@ -84,7 +88,7 @@ struct SamplingGpuPool : std::enable_shared_from_this<SamplingGpuPool> {
     // backend, then copy the output into `dst` (which must be a pool tensor
     // with an existing GPU buffer).
     void compute(ggml_tensor* dst, ggml_tensor* result_node, ggml_context* graph_ctx) {
-        ggml_cgraph* gf = ggml_new_graph(graph_ctx);
+        ggml_cgraph* gf = ggml_new_graph_custom(graph_ctx, GPU_TENSOR_GRAPH_SIZE, false);
         ggml_build_forward_expand(gf, result_node);
         ggml_gallocr_alloc_graph(graph_alloc, gf);
         if (ggml_backend_is_cpu(backend)) {
@@ -105,7 +109,7 @@ class GpuTensor {
 
     // Helper: create a temporary ggml context large enough for a small graph
     static ggml_context* make_graph_ctx() {
-        size_t mem = 16 * ggml_tensor_overhead() + ggml_graph_overhead_custom(16, false);
+        size_t mem = GPU_TENSOR_GRAPH_SIZE * ggml_tensor_overhead() + ggml_graph_overhead_custom(GPU_TENSOR_GRAPH_SIZE, false);
         ggml_init_params p = {};
         p.mem_size = mem;
         p.mem_buffer = nullptr;
@@ -276,7 +280,7 @@ public:
         ggml_tensor* scalar = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, pool->numel());
         ggml_tensor* r = ggml_add(ctx, a.tensor_, scalar);
 
-        ggml_cgraph* gf = ggml_new_graph(ctx);
+        ggml_cgraph* gf = ggml_new_graph_custom(ctx, GPU_TENSOR_GRAPH_SIZE, false);
         ggml_build_forward_expand(gf, r);
         ggml_gallocr_alloc_graph(pool->graph_alloc, gf);
 
@@ -312,7 +316,7 @@ public:
         ggml_tensor* scalar = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, pool->numel());
         ggml_tensor* r = ggml_add(ctx, neg, scalar);
 
-        ggml_cgraph* gf = ggml_new_graph(ctx);
+        ggml_cgraph* gf = ggml_new_graph_custom(ctx, GPU_TENSOR_GRAPH_SIZE, false);
         ggml_build_forward_expand(gf, r);
         ggml_gallocr_alloc_graph(pool->graph_alloc, gf);
 
@@ -338,7 +342,7 @@ public:
         ggml_tensor* scalar = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, pool->numel());
         ggml_tensor* r = ggml_div(ctx, scalar, a.tensor_);
 
-        ggml_cgraph* gf = ggml_new_graph(ctx);
+        ggml_cgraph* gf = ggml_new_graph_custom(ctx, GPU_TENSOR_GRAPH_SIZE, false);
         ggml_build_forward_expand(gf, r);
         ggml_gallocr_alloc_graph(pool->graph_alloc, gf);
 

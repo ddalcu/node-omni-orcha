@@ -12,6 +12,7 @@
 #include "control.hpp"
 #include "denoiser.hpp"
 #include "diffusion_model.hpp"
+#include "gpu_tensor.hpp"
 #include "esrgan.hpp"
 #include "lora.hpp"
 #include "pmid.hpp"
@@ -1792,20 +1793,56 @@ public:
             return denoised;
         };
 
-        auto x0_opt = sample_k_diffusion(method, denoise, x_t, sigmas, sampler_rng, eta, is_flow_denoiser);
-        if (x0_opt.empty()) {
-            LOG_ERROR("Diffusion model sampling failed");
-            if (control_net) {
-                control_net->free_control_ctx();
-                control_net->free_compute_buffer();
+        sd::Tensor<float> x0;
+
+        if (!ggml_backend_is_cpu(backend)) {
+            // GPU path: run sampling math on the GPU backend via GpuTensor.
+            // The denoise callback still operates on sd::Tensor (CPU) — we
+            // convert at the boundary.  All inter-step arithmetic (the
+            // expensive element-wise loops) runs on the GPU instead.
+            std::vector<int64_t> shape(x_t.shape().begin(), x_t.shape().end());
+            auto pool = std::make_shared<SamplingGpuPool>(backend, shape);
+            GpuTensor x_gpu(x_t, pool);
+
+            auto gpu_denoise = [&](const GpuTensor& gx, float sigma, int step) -> GpuTensor {
+                sd::Tensor<float> cpu_x = gx.to_cpu();
+                auto result = denoise(cpu_x, sigma, step);
+                if (result.empty()) return {};
+                return GpuTensor(result, pool);
+            };
+
+            auto x0_gpu = sample_k_diffusion<GpuTensor>(method, gpu_denoise, std::move(x_gpu),
+                                                          sigmas, sampler_rng, eta, is_flow_denoiser);
+            if (x0_gpu.empty()) {
+                LOG_ERROR("Diffusion model sampling failed");
+                if (control_net) {
+                    control_net->free_control_ctx();
+                    control_net->free_compute_buffer();
+                }
+                if (work_diffusion_model) {
+                    work_diffusion_model->free_compute_buffer();
+                }
+                return {};
             }
-            if (work_diffusion_model) {
-                work_diffusion_model->free_compute_buffer();
+            x0 = x0_gpu.to_cpu();
+        } else {
+            // CPU path: use sd::Tensor directly (original behavior).
+            auto x0_opt = sample_k_diffusion<sd::Tensor<float>>(method, denoise, x_t, sigmas,
+                                                                  sampler_rng, eta, is_flow_denoiser);
+            if (x0_opt.empty()) {
+                LOG_ERROR("Diffusion model sampling failed");
+                if (control_net) {
+                    control_net->free_control_ctx();
+                    control_net->free_compute_buffer();
+                }
+                if (work_diffusion_model) {
+                    work_diffusion_model->free_compute_buffer();
+                }
+                return {};
             }
-            return {};
+            x0 = std::move(x0_opt);
         }
 
-        auto x0 = std::move(x0_opt);
         sd_sample::log_sample_cache_summary(cache_runtime, steps);
         if (inverse_noise_scaling) {
             x0 = denoiser->inverse_noise_scaling(sigmas[sigmas.size() - 1], x0);

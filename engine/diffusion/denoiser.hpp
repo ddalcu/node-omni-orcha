@@ -754,6 +754,10 @@ struct Flux2FlowDenoiser : public FluxFlowDenoiser {
 
 typedef std::function<sd::Tensor<float>(const sd::Tensor<float>&, float, int)> denoise_cb_t;
 
+// Generic denoise callback type for templated samplers
+template <typename TensorT>
+using denoise_fn_t = std::function<TensorT(const TensorT&, float, int)>;
+
 static std::pair<float, float> get_ancestral_step(float sigma_from,
                                                   float sigma_to,
                                                   float eta = 1.0f) {
@@ -808,11 +812,12 @@ static std::tuple<float, float, float> get_ancestral_step_flow(float sigma_from,
     return {sigma_down, sigma_up, alpha_scale};
 }
 
-static sd::Tensor<float> sample_euler_ancestral(denoise_cb_t model,
-                                                sd::Tensor<float> x,
-                                                const std::vector<float>& sigmas,
-                                                std::shared_ptr<RNG> rng,
-                                                float eta) {
+template <typename TensorT, typename DenoiseFn>
+static TensorT sample_euler_ancestral(DenoiseFn model,
+                                      TensorT x,
+                                      const std::vector<float>& sigmas,
+                                      std::shared_ptr<RNG> rng,
+                                      float eta) {
     int steps = static_cast<int>(sigmas.size()) - 1;
     for (int i = 0; i < steps; i++) {
         float sigma       = sigmas[i];
@@ -820,22 +825,23 @@ static sd::Tensor<float> sample_euler_ancestral(denoise_cb_t model,
         if (denoised_opt.empty()) {
             return {};
         }
-        sd::Tensor<float> denoised  = std::move(denoised_opt);
-        sd::Tensor<float> d         = (x - denoised) / sigma;
+        TensorT denoised            = std::move(denoised_opt);
+        TensorT d                   = (x - denoised) / sigma;
         auto [sigma_down, sigma_up] = get_ancestral_step(sigmas[i], sigmas[i + 1], eta);
         x += d * (sigma_down - sigmas[i]);
         if (sigmas[i + 1] > 0) {
-            x += sd::Tensor<float>::randn_like(x, rng) * sigma_up;
+            x += TensorT::randn_like(x, rng) * sigma_up;
         }
     }
     return x;
 }
 
-static sd::Tensor<float> sample_euler_flow(denoise_cb_t model,
-                                           sd::Tensor<float> x,
-                                           const std::vector<float>& sigmas,
-                                           std::shared_ptr<RNG> rng,
-                                           float eta) {
+template <typename TensorT, typename DenoiseFn>
+static TensorT sample_euler_flow(DenoiseFn model,
+                                 TensorT x,
+                                 const std::vector<float>& sigmas,
+                                 std::shared_ptr<RNG> rng,
+                                 float eta) {
     int steps = static_cast<int>(sigmas.size()) - 1;
     for (int i = 0; i < steps; i++) {
         float sigma       = sigmas[i];
@@ -843,21 +849,22 @@ static sd::Tensor<float> sample_euler_flow(denoise_cb_t model,
         if (denoised_opt.empty()) {
             return {};
         }
-        sd::Tensor<float> denoised               = std::move(denoised_opt);
+        TensorT denoised                         = std::move(denoised_opt);
         auto [sigma_down, sigma_up, alpha_scale] = get_ancestral_step_flow(sigma, sigmas[i + 1], eta);
         float sigma_ratio                        = sigma_down / sigma;
         x                                        = sigma_ratio * x + (1.0f - sigma_ratio) * denoised;
 
         if (sigma_up > 0.0f) {
-            x = alpha_scale * x + sd::Tensor<float>::randn_like(x, rng) * sigma_up;
+            x = alpha_scale * x + TensorT::randn_like(x, rng) * sigma_up;
         }
     }
     return x;
 }
 
-static sd::Tensor<float> sample_euler(denoise_cb_t model,
-                                      sd::Tensor<float> x,
-                                      const std::vector<float>& sigmas) {
+template <typename TensorT, typename DenoiseFn>
+static TensorT sample_euler(DenoiseFn model,
+                             TensorT x,
+                             const std::vector<float>& sigmas) {
     int steps = static_cast<int>(sigmas.size()) - 1;
     for (int i = 0; i < steps; i++) {
         float sigma       = sigmas[i];
@@ -865,75 +872,78 @@ static sd::Tensor<float> sample_euler(denoise_cb_t model,
         if (denoised_opt.empty()) {
             return {};
         }
-        sd::Tensor<float> denoised = std::move(denoised_opt);
-        sd::Tensor<float> d        = (x - denoised) / sigma;
+        TensorT denoised = std::move(denoised_opt);
+        TensorT d        = (x - denoised) / sigma;
         x += d * (sigmas[i + 1] - sigma);
     }
     return x;
 }
 
-static sd::Tensor<float> sample_heun(denoise_cb_t model,
-                                     sd::Tensor<float> x,
-                                     const std::vector<float>& sigmas) {
+template <typename TensorT, typename DenoiseFn>
+static TensorT sample_heun(DenoiseFn model,
+                            TensorT x,
+                            const std::vector<float>& sigmas) {
     int steps = static_cast<int>(sigmas.size()) - 1;
     for (int i = 0; i < steps; i++) {
         auto denoised_opt = model(x, sigmas[i], -(i + 1));
         if (denoised_opt.empty()) {
             return {};
         }
-        sd::Tensor<float> denoised = std::move(denoised_opt);
-        sd::Tensor<float> d        = (x - denoised) / sigmas[i];
-        float dt                   = sigmas[i + 1] - sigmas[i];
+        TensorT denoised = std::move(denoised_opt);
+        TensorT d        = (x - denoised) / sigmas[i];
+        float dt          = sigmas[i + 1] - sigmas[i];
         if (sigmas[i + 1] == 0) {
             x += d * dt;
         } else {
-            sd::Tensor<float> x2 = x + d * dt;
-            auto denoised2_opt   = model(x2, sigmas[i + 1], i + 1);
+            TensorT x2      = x + d * dt;
+            auto denoised2_opt = model(x2, sigmas[i + 1], i + 1);
             if (denoised2_opt.empty()) {
                 return {};
             }
-            sd::Tensor<float> denoised2 = std::move(denoised2_opt);
-            d                           = (d + (x2 - denoised2) / sigmas[i + 1]) / 2.0f;
+            TensorT denoised2 = std::move(denoised2_opt);
+            d                  = (d + (x2 - denoised2) / sigmas[i + 1]) / 2.0f;
             x += d * dt;
         }
     }
     return x;
 }
 
-static sd::Tensor<float> sample_dpm2(denoise_cb_t model,
-                                     sd::Tensor<float> x,
-                                     const std::vector<float>& sigmas) {
+template <typename TensorT, typename DenoiseFn>
+static TensorT sample_dpm2(DenoiseFn model,
+                            TensorT x,
+                            const std::vector<float>& sigmas) {
     int steps = static_cast<int>(sigmas.size()) - 1;
     for (int i = 0; i < steps; i++) {
         auto denoised_opt = model(x, sigmas[i], -(i + 1));
         if (denoised_opt.empty()) {
             return {};
         }
-        sd::Tensor<float> denoised = std::move(denoised_opt);
-        sd::Tensor<float> d        = (x - denoised) / sigmas[i];
+        TensorT denoised = std::move(denoised_opt);
+        TensorT d        = (x - denoised) / sigmas[i];
         if (sigmas[i + 1] == 0) {
             x += d * (sigmas[i + 1] - sigmas[i]);
         } else {
-            float sigma_mid      = exp(0.5f * (log(sigmas[i]) + log(sigmas[i + 1])));
-            float dt_1           = sigma_mid - sigmas[i];
-            float dt_2           = sigmas[i + 1] - sigmas[i];
-            sd::Tensor<float> x2 = x + d * dt_1;
-            auto denoised2_opt   = model(x2, sigma_mid, i + 1);
+            float sigma_mid    = exp(0.5f * (log(sigmas[i]) + log(sigmas[i + 1])));
+            float dt_1         = sigma_mid - sigmas[i];
+            float dt_2         = sigmas[i + 1] - sigmas[i];
+            TensorT x2        = x + d * dt_1;
+            auto denoised2_opt = model(x2, sigma_mid, i + 1);
             if (denoised2_opt.empty()) {
                 return {};
             }
-            sd::Tensor<float> denoised2 = std::move(denoised2_opt);
+            TensorT denoised2 = std::move(denoised2_opt);
             x += ((x2 - denoised2) / sigma_mid) * dt_2;
         }
     }
     return x;
 }
 
-static sd::Tensor<float> sample_dpmpp_2s_ancestral(denoise_cb_t model,
-                                                   sd::Tensor<float> x,
-                                                   const std::vector<float>& sigmas,
-                                                   std::shared_ptr<RNG> rng,
-                                                   float eta) {
+template <typename TensorT, typename DenoiseFn>
+static TensorT sample_dpmpp_2s_ancestral(DenoiseFn model,
+                                          TensorT x,
+                                          const std::vector<float>& sigmas,
+                                          std::shared_ptr<RNG> rng,
+                                          float eta) {
     auto t_fn     = [](float sigma) -> float { return -log(sigma); };
     auto sigma_fn = [](float t) -> float { return exp(-t); };
 
@@ -943,37 +953,38 @@ static sd::Tensor<float> sample_dpmpp_2s_ancestral(denoise_cb_t model,
         if (denoised_opt.empty()) {
             return {};
         }
-        sd::Tensor<float> denoised  = std::move(denoised_opt);
+        TensorT denoised            = std::move(denoised_opt);
         auto [sigma_down, sigma_up] = get_ancestral_step(sigmas[i], sigmas[i + 1], eta);
 
         if (sigma_down == 0) {
-            x = denoised;
+            x = std::move(denoised);
         } else {
-            float t              = t_fn(sigmas[i]);
-            float t_next         = t_fn(sigma_down);
-            float h              = t_next - t;
-            float s              = t + 0.5f * h;
-            sd::Tensor<float> x2 = (sigma_fn(s) / sigma_fn(t)) * x - (exp(-h * 0.5f) - 1) * denoised;
-            auto denoised2_opt   = model(x2, sigmas[i + 1], i + 1);
+            float t            = t_fn(sigmas[i]);
+            float t_next       = t_fn(sigma_down);
+            float h            = t_next - t;
+            float s            = t + 0.5f * h;
+            TensorT x2        = (sigma_fn(s) / sigma_fn(t)) * x - (exp(-h * 0.5f) - 1) * denoised;
+            auto denoised2_opt = model(x2, sigmas[i + 1], i + 1);
             if (denoised2_opt.empty()) {
                 return {};
             }
-            sd::Tensor<float> denoised2 = std::move(denoised2_opt);
-            x                           = (sigma_fn(t_next) / sigma_fn(t)) * x - (exp(-h) - 1) * denoised2;
+            TensorT denoised2 = std::move(denoised2_opt);
+            x                  = (sigma_fn(t_next) / sigma_fn(t)) * x - (exp(-h) - 1) * denoised2;
         }
 
         if (sigmas[i + 1] > 0) {
-            x += sd::Tensor<float>::randn_like(x, rng) * sigma_up;
+            x += TensorT::randn_like(x, rng) * sigma_up;
         }
     }
     return x;
 }
 
-static sd::Tensor<float> sample_dpmpp_2m(denoise_cb_t model,
-                                         sd::Tensor<float> x,
-                                         const std::vector<float>& sigmas) {
-    sd::Tensor<float> old_denoised = x;
-    auto t_fn                      = [](float sigma) -> float { return -log(sigma); };
+template <typename TensorT, typename DenoiseFn>
+static TensorT sample_dpmpp_2m(DenoiseFn model,
+                                TensorT x,
+                                const std::vector<float>& sigmas) {
+    TensorT old_denoised = x;
+    auto t_fn            = [](float sigma) -> float { return -log(sigma); };
 
     int steps = static_cast<int>(sigmas.size()) - 1;
     for (int i = 0; i < steps; i++) {
@@ -981,31 +992,32 @@ static sd::Tensor<float> sample_dpmpp_2m(denoise_cb_t model,
         if (denoised_opt.empty()) {
             return {};
         }
-        sd::Tensor<float> denoised = std::move(denoised_opt);
-        float t                    = t_fn(sigmas[i]);
-        float t_next               = t_fn(sigmas[i + 1]);
-        float h                    = t_next - t;
-        float a                    = sigmas[i + 1] / sigmas[i];
-        float b                    = exp(-h) - 1.f;
+        TensorT denoised = std::move(denoised_opt);
+        float t           = t_fn(sigmas[i]);
+        float t_next      = t_fn(sigmas[i + 1]);
+        float h           = t_next - t;
+        float a           = sigmas[i + 1] / sigmas[i];
+        float b           = exp(-h) - 1.f;
 
         if (i == 0 || sigmas[i + 1] == 0) {
             x = a * x - b * denoised;
         } else {
-            float h_last                 = t - t_fn(sigmas[i - 1]);
-            float r                      = h_last / h;
-            sd::Tensor<float> denoised_d = (1.f + 1.f / (2.f * r)) * denoised - (1.f / (2.f * r)) * old_denoised;
-            x                            = a * x - b * denoised_d;
+            float h_last          = t - t_fn(sigmas[i - 1]);
+            float r               = h_last / h;
+            TensorT denoised_d    = (1.f + 1.f / (2.f * r)) * denoised - (1.f / (2.f * r)) * old_denoised;
+            x                     = a * x - b * denoised_d;
         }
         old_denoised = denoised;
     }
     return x;
 }
 
-static sd::Tensor<float> sample_dpmpp_2m_v2(denoise_cb_t model,
-                                            sd::Tensor<float> x,
-                                            const std::vector<float>& sigmas) {
-    sd::Tensor<float> old_denoised = x;
-    auto t_fn                      = [](float sigma) -> float { return -log(sigma); };
+template <typename TensorT, typename DenoiseFn>
+static TensorT sample_dpmpp_2m_v2(DenoiseFn model,
+                                   TensorT x,
+                                   const std::vector<float>& sigmas) {
+    TensorT old_denoised = x;
+    auto t_fn            = [](float sigma) -> float { return -log(sigma); };
 
     int steps = static_cast<int>(sigmas.size()) - 1;
     for (int i = 0; i < steps; i++) {
@@ -1013,34 +1025,35 @@ static sd::Tensor<float> sample_dpmpp_2m_v2(denoise_cb_t model,
         if (denoised_opt.empty()) {
             return {};
         }
-        sd::Tensor<float> denoised = std::move(denoised_opt);
-        float t                    = t_fn(sigmas[i]);
-        float t_next               = t_fn(sigmas[i + 1]);
-        float h                    = t_next - t;
-        float a                    = sigmas[i + 1] / sigmas[i];
+        TensorT denoised = std::move(denoised_opt);
+        float t           = t_fn(sigmas[i]);
+        float t_next      = t_fn(sigmas[i + 1]);
+        float h           = t_next - t;
+        float a           = sigmas[i + 1] / sigmas[i];
 
         if (i == 0 || sigmas[i + 1] == 0) {
             float b = exp(-h) - 1.f;
             x       = a * x - b * denoised;
         } else {
-            float h_last                 = t - t_fn(sigmas[i - 1]);
-            float h_min                  = std::min(h_last, h);
-            float h_max                  = std::max(h_last, h);
-            float r                      = h_max / h_min;
-            float h_d                    = (h_max + h_min) / 2.f;
-            float b                      = exp(-h_d) - 1.f;
-            sd::Tensor<float> denoised_d = (1.f + 1.f / (2.f * r)) * denoised - (1.f / (2.f * r)) * old_denoised;
-            x                            = a * x - b * denoised_d;
+            float h_last       = t - t_fn(sigmas[i - 1]);
+            float h_min        = std::min(h_last, h);
+            float h_max        = std::max(h_last, h);
+            float r            = h_max / h_min;
+            float h_d          = (h_max + h_min) / 2.f;
+            float b            = exp(-h_d) - 1.f;
+            TensorT denoised_d = (1.f + 1.f / (2.f * r)) * denoised - (1.f / (2.f * r)) * old_denoised;
+            x                  = a * x - b * denoised_d;
         }
         old_denoised = denoised;
     }
     return x;
 }
 
-static sd::Tensor<float> sample_lcm(denoise_cb_t model,
-                                    sd::Tensor<float> x,
-                                    const std::vector<float>& sigmas,
-                                    std::shared_ptr<RNG> rng) {
+template <typename TensorT, typename DenoiseFn>
+static TensorT sample_lcm(DenoiseFn model,
+                            TensorT x,
+                            const std::vector<float>& sigmas,
+                            std::shared_ptr<RNG> rng) {
     int steps = static_cast<int>(sigmas.size()) - 1;
     for (int i = 0; i < steps; i++) {
         auto denoised_opt = model(x, sigmas[i], i + 1);
@@ -1049,17 +1062,18 @@ static sd::Tensor<float> sample_lcm(denoise_cb_t model,
         }
         x = std::move(denoised_opt);
         if (sigmas[i + 1] > 0) {
-            x += sd::Tensor<float>::randn_like(x, rng) * sigmas[i + 1];
+            x += TensorT::randn_like(x, rng) * sigmas[i + 1];
         }
     }
     return x;
 }
 
-static sd::Tensor<float> sample_ipndm(denoise_cb_t model,
-                                      sd::Tensor<float> x,
-                                      const std::vector<float>& sigmas) {
-    const int max_order                 = 4;
-    std::vector<sd::Tensor<float>> hist = {};
+template <typename TensorT, typename DenoiseFn>
+static TensorT sample_ipndm(DenoiseFn model,
+                              TensorT x,
+                              const std::vector<float>& sigmas) {
+    const int max_order     = 4;
+    std::vector<TensorT> hist = {};
 
     int steps = static_cast<int>(sigmas.size()) - 1;
     for (int i = 0; i < steps; i++) {
@@ -1070,11 +1084,11 @@ static sd::Tensor<float> sample_ipndm(denoise_cb_t model,
         if (denoised_opt.empty()) {
             return {};
         }
-        sd::Tensor<float> denoised = std::move(denoised_opt);
+        TensorT denoised = std::move(denoised_opt);
 
-        sd::Tensor<float> d_cur = (x - denoised) / sigma;
-        int order               = std::min(max_order, i + 1);
-        float dt                = sigma_next - sigma;
+        TensorT d_cur = (x - denoised) / sigma;
+        int order      = std::min(max_order, i + 1);
+        float dt       = sigma_next - sigma;
 
         switch (order) {
             case 1:
@@ -1099,11 +1113,12 @@ static sd::Tensor<float> sample_ipndm(denoise_cb_t model,
     return x;
 }
 
-static sd::Tensor<float> sample_ipndm_v(denoise_cb_t model,
-                                        sd::Tensor<float> x,
-                                        const std::vector<float>& sigmas) {
-    const int max_order                 = 4;
-    std::vector<sd::Tensor<float>> hist = {};
+template <typename TensorT, typename DenoiseFn>
+static TensorT sample_ipndm_v(DenoiseFn model,
+                                TensorT x,
+                                const std::vector<float>& sigmas) {
+    const int max_order     = 4;
+    std::vector<TensorT> hist = {};
 
     int steps = static_cast<int>(sigmas.size()) - 1;
     for (int i = 0; i < steps; i++) {
@@ -1114,12 +1129,12 @@ static sd::Tensor<float> sample_ipndm_v(denoise_cb_t model,
         if (denoised_opt.empty()) {
             return {};
         }
-        sd::Tensor<float> denoised = std::move(denoised_opt);
+        TensorT denoised = std::move(denoised_opt);
 
-        sd::Tensor<float> d_cur = (x - denoised) / sigma;
-        int order               = std::min(max_order, i + 1);
-        float h_n               = t_next - sigma;
-        float h_n_1             = (i > 0) ? (sigma - sigmas[i - 1]) : h_n;
+        TensorT d_cur = (x - denoised) / sigma;
+        int order      = std::min(max_order, i + 1);
+        float h_n      = t_next - sigma;
+        float h_n_1    = (i > 0) ? (sigma - sigmas[i - 1]) : h_n;
 
         switch (order) {
             case 1:
@@ -1144,14 +1159,15 @@ static sd::Tensor<float> sample_ipndm_v(denoise_cb_t model,
     return x;
 }
 
-static sd::Tensor<float> sample_res_multistep(denoise_cb_t model,
-                                              sd::Tensor<float> x,
-                                              const std::vector<float>& sigmas,
-                                              std::shared_ptr<RNG> rng,
-                                              float eta) {
-    sd::Tensor<float> old_denoised = x;
-    bool have_old_sigma            = false;
-    float old_sigma_down           = 0.0f;
+template <typename TensorT, typename DenoiseFn>
+static TensorT sample_res_multistep(DenoiseFn model,
+                                     TensorT x,
+                                     const std::vector<float>& sigmas,
+                                     std::shared_ptr<RNG> rng,
+                                     float eta) {
+    TensorT old_denoised  = x;
+    bool have_old_sigma   = false;
+    float old_sigma_down  = 0.0f;
 
     auto t_fn     = [](float sigma) -> float { return -logf(sigma); };
     auto sigma_fn = [](float t) -> float { return expf(-t); };
@@ -1175,7 +1191,7 @@ static sd::Tensor<float> sample_res_multistep(denoise_cb_t model,
         if (denoised_opt.empty()) {
             return {};
         }
-        sd::Tensor<float> denoised = std::move(denoised_opt);
+        TensorT denoised = std::move(denoised_opt);
 
         float sigma_from            = sigmas[i];
         float sigma_to              = sigmas[i + 1];
@@ -1207,7 +1223,7 @@ static sd::Tensor<float> sample_res_multistep(denoise_cb_t model,
         }
 
         if (sigmas[i + 1] > 0 && sigma_up > 0.0f) {
-            x += sd::Tensor<float>::randn_like(x, rng) * sigma_up;
+            x += TensorT::randn_like(x, rng) * sigma_up;
         }
 
         old_denoised   = denoised;
@@ -1217,11 +1233,12 @@ static sd::Tensor<float> sample_res_multistep(denoise_cb_t model,
     return x;
 }
 
-static sd::Tensor<float> sample_res_2s(denoise_cb_t model,
-                                       sd::Tensor<float> x,
-                                       const std::vector<float>& sigmas,
-                                       std::shared_ptr<RNG> rng,
-                                       float eta) {
+template <typename TensorT, typename DenoiseFn>
+static TensorT sample_res_2s(DenoiseFn model,
+                               TensorT x,
+                               const std::vector<float>& sigmas,
+                               std::shared_ptr<RNG> rng,
+                               float eta) {
     const float c2 = 0.5f;
     auto t_fn      = [](float sigma) -> float { return -logf(sigma); };
     auto phi1_fn   = [](float t) -> float {
@@ -1247,13 +1264,13 @@ static sd::Tensor<float> sample_res_2s(denoise_cb_t model,
         if (denoised_opt.empty()) {
             return {};
         }
-        sd::Tensor<float> denoised = std::move(denoised_opt);
+        TensorT denoised = std::move(denoised_opt);
 
         auto [sigma_down, sigma_up] = get_ancestral_step(sigma_from, sigma_to, eta);
 
-        sd::Tensor<float> x0 = x;
+        TensorT x0 = x;
         if (sigma_down == 0.0f || sigma_from == 0.0f) {
-            x = denoised;
+            x = std::move(denoised);
         } else {
             float t      = t_fn(sigma_from);
             float t_next = t_fn(sigma_down);
@@ -1265,31 +1282,32 @@ static sd::Tensor<float> sample_res_2s(denoise_cb_t model,
             float b2       = phi2_val / c2;
             float b1       = phi1_val - b2;
 
-            float sigma_c2         = expf(-(t + h * c2));
-            sd::Tensor<float> eps1 = denoised - x0;
-            sd::Tensor<float> x2   = x0 + eps1 * (h * a21);
+            float sigma_c2     = expf(-(t + h * c2));
+            TensorT eps1       = denoised - x0;
+            TensorT x2         = x0 + eps1 * (h * a21);
 
             auto denoised2_opt = model(x2, sigma_c2, i + 1);
             if (denoised2_opt.empty()) {
                 return {};
             }
-            sd::Tensor<float> denoised2 = std::move(denoised2_opt);
-            sd::Tensor<float> eps2      = denoised2 - x0;
-            x                           = x0 + h * (b1 * eps1 + b2 * eps2);
+            TensorT denoised2 = std::move(denoised2_opt);
+            TensorT eps2       = denoised2 - x0;
+            x                  = x0 + h * (b1 * eps1 + b2 * eps2);
         }
 
         if (sigmas[i + 1] > 0 && sigma_up > 0.0f) {
-            x += sd::Tensor<float>::randn_like(x, rng) * sigma_up;
+            x += TensorT::randn_like(x, rng) * sigma_up;
         }
     }
     return x;
 }
 
-static sd::Tensor<float> sample_ddim_trailing(denoise_cb_t model,
-                                              sd::Tensor<float> x,
-                                              const std::vector<float>& sigmas,
-                                              std::shared_ptr<RNG> rng,
-                                              float eta) {
+template <typename TensorT, typename DenoiseFn>
+static TensorT sample_ddim_trailing(DenoiseFn model,
+                                     TensorT x,
+                                     const std::vector<float>& sigmas,
+                                     std::shared_ptr<RNG> rng,
+                                     float eta) {
     float beta_start = 0.00085f;
     float beta_end   = 0.0120f;
     std::vector<double> alphas_cumprod(TIMESTEPS);
@@ -1321,16 +1339,16 @@ static sd::Tensor<float> sample_ddim_trailing(denoise_cb_t model,
         if (model_output_opt.empty()) {
             return {};
         }
-        sd::Tensor<float> model_output = std::move(model_output_opt);
-        model_output                   = (x - model_output) * (1.0f / sigma);
+        TensorT model_output = std::move(model_output_opt);
+        model_output          = (x - model_output) * (1.0f / sigma);
 
         float alpha_prod_t      = static_cast<float>(alphas_cumprod[timestep]);
         float alpha_prod_t_prev = static_cast<float>(prev_timestep >= 0 ? alphas_cumprod[prev_timestep] : alphas_cumprod[0]);
         float beta_prod_t       = 1.0f - alpha_prod_t;
 
-        sd::Tensor<float> pred_original_sample = ((x / std::sqrt(sigma * sigma + 1)) -
-                                                  std::sqrt(beta_prod_t) * model_output) *
-                                                 (1.0f / std::sqrt(alpha_prod_t));
+        TensorT pred_original_sample = ((x / std::sqrt(sigma * sigma + 1)) -
+                                        std::sqrt(beta_prod_t) * model_output) *
+                                       (1.0f / std::sqrt(alpha_prod_t));
 
         float beta_prod_t_prev = 1.0f - alpha_prod_t_prev;
         float variance         = (beta_prod_t_prev / beta_prod_t) *
@@ -1341,17 +1359,18 @@ static sd::Tensor<float> sample_ddim_trailing(denoise_cb_t model,
             std::sqrt(1.0f - alpha_prod_t_prev - std::pow(std_dev_t, 2)) * model_output;
 
         if (eta > 0) {
-            x += std_dev_t * sd::Tensor<float>::randn_like(x, rng);
+            x += std_dev_t * TensorT::randn_like(x, rng);
         }
     }
     return x;
 }
 
-static sd::Tensor<float> sample_tcd(denoise_cb_t model,
-                                    sd::Tensor<float> x,
-                                    const std::vector<float>& sigmas,
-                                    std::shared_ptr<RNG> rng,
-                                    float eta) {
+template <typename TensorT, typename DenoiseFn>
+static TensorT sample_tcd(DenoiseFn model,
+                            TensorT x,
+                            const std::vector<float>& sigmas,
+                            std::shared_ptr<RNG> rng,
+                            float eta) {
     float beta_start = 0.00085f;
     float beta_end   = 0.0120f;
     std::vector<double> alphas_cumprod(TIMESTEPS);
@@ -1386,8 +1405,8 @@ static sd::Tensor<float> sample_tcd(denoise_cb_t model,
         if (model_output_opt.empty()) {
             return {};
         }
-        sd::Tensor<float> model_output = std::move(model_output_opt);
-        model_output                   = (x - model_output) * (1.0f / sigma);
+        TensorT model_output = std::move(model_output_opt);
+        model_output          = (x - model_output) * (1.0f / sigma);
 
         float alpha_prod_t      = static_cast<float>(alphas_cumprod[timestep]);
         float beta_prod_t       = 1.0f - alpha_prod_t;
@@ -1395,61 +1414,63 @@ static sd::Tensor<float> sample_tcd(denoise_cb_t model,
         float alpha_prod_s      = static_cast<float>(alphas_cumprod[timestep_s]);
         float beta_prod_s       = 1.0f - alpha_prod_s;
 
-        sd::Tensor<float> pred_original_sample = ((x / std::sqrt(sigma * sigma + 1)) -
-                                                  std::sqrt(beta_prod_t) * model_output) *
-                                                 (1.0f / std::sqrt(alpha_prod_t));
+        TensorT pred_original_sample = ((x / std::sqrt(sigma * sigma + 1)) -
+                                        std::sqrt(beta_prod_t) * model_output) *
+                                       (1.0f / std::sqrt(alpha_prod_t));
 
         x = std::sqrt(alpha_prod_s) * pred_original_sample +
             std::sqrt(beta_prod_s) * model_output;
 
         if (eta > 0 && i != steps - 1) {
             x = std::sqrt(alpha_prod_t_prev / alpha_prod_s) * x +
-                std::sqrt(1.0f - alpha_prod_t_prev / alpha_prod_s) * sd::Tensor<float>::randn_like(x, rng);
+                std::sqrt(1.0f - alpha_prod_t_prev / alpha_prod_s) * TensorT::randn_like(x, rng);
         }
     }
     return x;
 }
 
 // k diffusion reverse ODE: dx = (x - D(x;\sigma)) / \sigma dt; \sigma(t) = t
-static sd::Tensor<float> sample_k_diffusion(sample_method_t method,
-                                            denoise_cb_t model,
-                                            sd::Tensor<float> x,
-                                            std::vector<float> sigmas,
-                                            std::shared_ptr<RNG> rng,
-                                            float eta,
-                                            bool is_flow_denoiser) {
+// Templated to work with both sd::Tensor<float> (CPU) and GpuTensor (GPU).
+template <typename TensorT, typename DenoiseFn>
+static TensorT sample_k_diffusion(sample_method_t method,
+                                   DenoiseFn model,
+                                   TensorT x,
+                                   std::vector<float> sigmas,
+                                   std::shared_ptr<RNG> rng,
+                                   float eta,
+                                   bool is_flow_denoiser) {
     switch (method) {
         case EULER_A_SAMPLE_METHOD:
             if (is_flow_denoiser)
-                return sample_euler_flow(model, std::move(x), sigmas, rng, eta);
+                return sample_euler_flow<TensorT>(model, std::move(x), sigmas, rng, eta);
             else
-                return sample_euler_ancestral(model, std::move(x), sigmas, rng, eta);
+                return sample_euler_ancestral<TensorT>(model, std::move(x), sigmas, rng, eta);
         case EULER_SAMPLE_METHOD:
-            return sample_euler(model, std::move(x), sigmas);
+            return sample_euler<TensorT>(model, std::move(x), sigmas);
         case HEUN_SAMPLE_METHOD:
-            return sample_heun(model, std::move(x), sigmas);
+            return sample_heun<TensorT>(model, std::move(x), sigmas);
         case DPM2_SAMPLE_METHOD:
-            return sample_dpm2(model, std::move(x), sigmas);
+            return sample_dpm2<TensorT>(model, std::move(x), sigmas);
         case DPMPP2S_A_SAMPLE_METHOD:
-            return sample_dpmpp_2s_ancestral(model, std::move(x), sigmas, rng, eta);
+            return sample_dpmpp_2s_ancestral<TensorT>(model, std::move(x), sigmas, rng, eta);
         case DPMPP2M_SAMPLE_METHOD:
-            return sample_dpmpp_2m(model, std::move(x), sigmas);
+            return sample_dpmpp_2m<TensorT>(model, std::move(x), sigmas);
         case DPMPP2Mv2_SAMPLE_METHOD:
-            return sample_dpmpp_2m_v2(model, std::move(x), sigmas);
+            return sample_dpmpp_2m_v2<TensorT>(model, std::move(x), sigmas);
         case LCM_SAMPLE_METHOD:
-            return sample_lcm(model, std::move(x), sigmas, rng);
+            return sample_lcm<TensorT>(model, std::move(x), sigmas, rng);
         case IPNDM_SAMPLE_METHOD:
-            return sample_ipndm(model, std::move(x), sigmas);
+            return sample_ipndm<TensorT>(model, std::move(x), sigmas);
         case IPNDM_V_SAMPLE_METHOD:
-            return sample_ipndm_v(model, std::move(x), sigmas);
+            return sample_ipndm_v<TensorT>(model, std::move(x), sigmas);
         case RES_MULTISTEP_SAMPLE_METHOD:
-            return sample_res_multistep(model, std::move(x), sigmas, rng, eta);
+            return sample_res_multistep<TensorT>(model, std::move(x), sigmas, rng, eta);
         case RES_2S_SAMPLE_METHOD:
-            return sample_res_2s(model, std::move(x), sigmas, rng, eta);
+            return sample_res_2s<TensorT>(model, std::move(x), sigmas, rng, eta);
         case DDIM_TRAILING_SAMPLE_METHOD:
-            return sample_ddim_trailing(model, std::move(x), sigmas, rng, eta);
+            return sample_ddim_trailing<TensorT>(model, std::move(x), sigmas, rng, eta);
         case TCD_SAMPLE_METHOD:
-            return sample_tcd(model, std::move(x), sigmas, rng, eta);
+            return sample_tcd<TensorT>(model, std::move(x), sigmas, rng, eta);
         default:
             return {};
     }

@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { existsSync, statSync, mkdirSync, createWriteStream, renameSync, unlinkSync } from 'node:fs';
 import * as path from 'node:path';
 import { createModel, getSystemStatus } from './src/index.ts';
-import type { LlmModel, TtsModel, ImageModel, ChatMessage } from './src/types.ts';
+import type { LlmModel, TtsModel, ImageModel, ChatMessage, SampleMethod } from './src/types.ts';
 
 // --- Config ---
 const PORT = Number(process.env.PORT ?? 3333);
@@ -330,7 +330,6 @@ async function handleImage(req: IncomingMessage, res: ServerResponse) {
       height: body.height ?? 1024,
       steps: body.steps ?? 4,
       cfgScale: body.cfgScale ?? 1.5,
-      strength: body.strength ?? 1.0,
       sampleMethod: body.sampleMethod ?? 'euler',
       scheduler: body.scheduler ?? 'discrete',
       seed: body.seed,
@@ -367,7 +366,7 @@ async function handleVideo(req: IncomingMessage, res: ServerResponse) {
       ...(v.highNoiseDefaults ? {
         highNoiseSteps: v.highNoiseDefaults.steps,
         highNoiseCfgScale: v.highNoiseDefaults.cfgScale,
-        highNoiseSampleMethod: v.highNoiseDefaults.sampleMethod,
+        highNoiseSampleMethod: v.highNoiseDefaults.sampleMethod as SampleMethod,
       } : {}),
     });
     const b64Frames = frames.map(f => f.toString('base64'));

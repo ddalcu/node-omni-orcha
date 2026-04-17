@@ -11,6 +11,9 @@
       "default": "./dist/index.js"
     }
   },
+  "bin": {
+    "omni-serve": "bin/omni-serve.js"
+  },
   "engines": {
     "node": ">=25.0.0"
   },
@@ -52,7 +55,9 @@
   },
   "files": [
     "dist/",
-    "src/"
+    "src/",
+    "bin/",
+    "server.ts"
   ],
   "keywords": [
     "llm", "tts", "llama", "stable-diffusion", "flux",

@@ -1,17 +1,12 @@
-import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { createServer as createHttpsServer } from 'node:https';
-import { existsSync, statSync, readFileSync } from 'node:fs';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { existsSync, statSync, mkdirSync, createWriteStream, renameSync, unlinkSync } from 'node:fs';
 import * as path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { createModel, getSystemStatus } from './src/index.ts';
 import type { LlmModel, TtsModel, ImageModel, ChatMessage } from './src/types.ts';
 
 // --- Config ---
 const PORT = Number(process.env.PORT ?? 3333);
 const MODELS_DIR = process.env.MODELS_DIR ?? `${process.env.HOME}/.orcha/workspace/.models`;
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SCRIPT_PATH = path.join(__dirname, 'scripts', 'download-test-models.sh');
 
 const LLM_PATH = process.env.LLM_MODEL ?? `${MODELS_DIR}/qwen3-5-4b/Qwen3.5-4B-IQ4_NL.gguf`;
 const LLM_MMPROJ_PATH = process.env.LLM_MMPROJ ?? `${MODELS_DIR}/qwen3-5-4b/mmproj-F16.gguf`;
@@ -68,43 +63,44 @@ const VIDEO_VARIANTS: Record<VideoVariant, VideoVariantConfig> = {
 
 // --- Model file registry (for detection & download UI) ---
 
-interface ModelFileInfo { path: string; label: string; expectedSize: string }
-interface ModelGroup { id: string; label: string; scriptFlag: string | null; files: ModelFileInfo[] }
+interface ModelFileInfo { path: string; label: string; expectedSize: string; url: string }
+interface ModelGroup { id: string; label: string; files: ModelFileInfo[] }
 
 const MODEL_GROUPS: ModelGroup[] = [
   {
-    id: 'base', label: 'Base (LLM)', scriptFlag: null,
+    id: 'base', label: 'Base (LLM)',
     files: [
-      { path: `${MODELS_DIR}/qwen3-5-4b/Qwen3.5-4B-IQ4_NL.gguf`, label: 'Qwen3.5-4B IQ4_NL', expectedSize: '~2.5 GB' },
-      { path: `${MODELS_DIR}/tinyllama/tinyllama.gguf`, label: 'TinyLlama 1.1B (test)', expectedSize: '~250 MB' },
+      { path: `${MODELS_DIR}/qwen3-5-4b/Qwen3.5-4B-IQ4_NL.gguf`, label: 'Qwen3.5-4B IQ4_NL', expectedSize: '~2.5 GB', url: 'https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-IQ4_NL.gguf' },
+      { path: `${MODELS_DIR}/qwen3-5-4b/mmproj-F16.gguf`, label: 'Qwen3.5-4B mmproj F16 (vision)', expectedSize: '~641 MB', url: 'https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/mmproj-F16.gguf' },
+      { path: `${MODELS_DIR}/tinyllama/tinyllama.gguf`, label: 'TinyLlama 1.1B (test)', expectedSize: '~250 MB', url: 'https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf' },
     ],
   },
   {
-    id: 'tts', label: 'TTS (Qwen3-TTS, voice cloning)', scriptFlag: '--tts',
+    id: 'tts', label: 'TTS (Qwen3-TTS, voice cloning)',
     files: [
-      { path: `${MODELS_DIR}/qwen3-tts/qwen3-tts-0.6b-f16.gguf`, label: 'Qwen3-TTS 0.6B F16', expectedSize: '~1 GB' },
-      { path: `${MODELS_DIR}/qwen3-tts/qwen3-tts-tokenizer-f16.gguf`, label: 'Qwen3-TTS Tokenizer', expectedSize: '~200 MB' },
+      { path: `${MODELS_DIR}/qwen3-tts/qwen3-tts-0.6b-f16.gguf`, label: 'Qwen3-TTS 0.6B F16', expectedSize: '~1 GB', url: 'https://huggingface.co/offbeatengineer/qwen3-tts-gguf/resolve/main/qwen3-tts-0.6b-f16.gguf' },
+      { path: `${MODELS_DIR}/qwen3-tts/qwen3-tts-tokenizer-f16.gguf`, label: 'Qwen3-TTS Tokenizer', expectedSize: '~200 MB', url: 'https://huggingface.co/offbeatengineer/qwen3-tts-gguf/resolve/main/qwen3-tts-tokenizer-f16.gguf' },
     ],
   },
   {
-    id: 'image', label: 'Image (FLUX 2 Klein)', scriptFlag: '--image',
+    id: 'image', label: 'Image (FLUX 2 Klein)',
     files: [
-      { path: `${MODELS_DIR}/flux2-klein/flux-2-klein-4b-Q4_K_M.gguf`, label: 'FLUX 2 Klein 4B', expectedSize: '~2.5 GB' },
-      { path: `${MODELS_DIR}/flux2-klein/Qwen3-4B-Q4_K_M.gguf`, label: 'Qwen3-4B (FLUX LLM)', expectedSize: '~2.2 GB' },
-      { path: `${MODELS_DIR}/flux2-klein/flux2-vae.safetensors`, label: 'FLUX 2 VAE', expectedSize: '~300 MB' },
+      { path: `${MODELS_DIR}/flux2-klein/flux-2-klein-4b-Q4_K_M.gguf`, label: 'FLUX 2 Klein 4B', expectedSize: '~2.5 GB', url: 'https://huggingface.co/unsloth/FLUX.2-klein-4B-GGUF/resolve/main/flux-2-klein-4b-Q4_K_M.gguf' },
+      { path: `${MODELS_DIR}/flux2-klein/Qwen3-4B-Q4_K_M.gguf`, label: 'Qwen3-4B (FLUX LLM)', expectedSize: '~2.2 GB', url: 'https://huggingface.co/unsloth/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf' },
+      { path: `${MODELS_DIR}/flux2-klein/flux2-vae.safetensors`, label: 'FLUX 2 VAE', expectedSize: '~300 MB', url: 'https://huggingface.co/Comfy-Org/flux2-dev/resolve/main/split_files/vae/flux2-vae.safetensors' },
     ],
   },
   {
-    id: 'video', label: 'Video (WAN 2.2 5B)', scriptFlag: '--video',
+    id: 'video', label: 'Video (WAN 2.2 5B)',
     files: [
-      { path: `${MODELS_DIR}/wan22-5b/Wan2.2-TI2V-5B-Q4_K_M.gguf`, label: 'WAN 2.2 TI2V 5B', expectedSize: '~3.5 GB' },
-      { path: `${MODELS_DIR}/wan22-5b/Wan2.2_VAE.safetensors`, label: 'WAN 2.2 VAE', expectedSize: '~300 MB' },
-      { path: `${MODELS_DIR}/wan22-5b/umt5-xxl-encoder-Q8_0.gguf`, label: 'UMT5-XXL Encoder', expectedSize: '~6 GB' },
+      { path: `${MODELS_DIR}/wan22-5b/Wan2.2-TI2V-5B-Q4_K_M.gguf`, label: 'WAN 2.2 TI2V 5B', expectedSize: '~3.5 GB', url: 'https://huggingface.co/QuantStack/Wan2.2-TI2V-5B-GGUF/resolve/main/Wan2.2-TI2V-5B-Q4_K_M.gguf' },
+      { path: `${MODELS_DIR}/wan22-5b/Wan2.2_VAE.safetensors`, label: 'WAN 2.2 VAE', expectedSize: '~300 MB', url: 'https://huggingface.co/QuantStack/Wan2.2-TI2V-5B-GGUF/resolve/main/VAE/Wan2.2_VAE.safetensors' },
+      { path: `${MODELS_DIR}/wan22-5b/umt5-xxl-encoder-Q8_0.gguf`, label: 'UMT5-XXL Encoder', expectedSize: '~6 GB', url: 'https://huggingface.co/city96/umt5-xxl-encoder-gguf/resolve/main/umt5-xxl-encoder-Q8_0.gguf' },
     ],
   },
 ];
 
-let activeDownload: ChildProcess | null = null;
+let activeDownload = false;
 
 // --- Model state ---
 const models: {
@@ -432,22 +428,67 @@ function handleModelsApi(_req: IncomingMessage, res: ServerResponse) {
   json(res, { modelsDir: MODELS_DIR, groups });
 }
 
-function handleDownloadApi(req: IncomingMessage, res: ServerResponse) {
+async function downloadFile(
+  url: string,
+  dest: string,
+  onProgress: (text: string) => void,
+): Promise<void> {
+  mkdirSync(path.dirname(dest), { recursive: true });
+  const tmpDest = dest + '.download';
+
+  const res = await fetch(url, { redirect: 'follow' });
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+  if (!res.body) throw new Error('No response body');
+
+  const totalBytes = Number(res.headers.get('content-length') || 0);
+  let downloadedBytes = 0;
+  let lastPct = -1;
+
+  const fileStream = createWriteStream(tmpDest);
+  const reader = res.body.getReader();
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      fileStream.write(value);
+      downloadedBytes += value.byteLength;
+
+      if (totalBytes > 0) {
+        const pct = Math.floor((downloadedBytes / totalBytes) * 100);
+        if (pct !== lastPct) {
+          lastPct = pct;
+          const dlMB = (downloadedBytes / 1048576).toFixed(0);
+          const totalMB = (totalBytes / 1048576).toFixed(0);
+          onProgress(`\r  ${pct}% (${dlMB}/${totalMB} MB)`);
+        }
+      }
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      fileStream.end(() => resolve());
+      fileStream.on('error', reject);
+    });
+
+    renameSync(tmpDest, dest);
+  } catch (e) {
+    fileStream.destroy();
+    try { unlinkSync(tmpDest); } catch {}
+    throw e;
+  }
+}
+
+async function handleDownloadApi(req: IncomingMessage, res: ServerResponse) {
   const reqUrl = new URL(req.url!, `http://${req.headers.host}`);
   const groupId = reqUrl.searchParams.get('group') ?? 'base';
 
-  const validGroups = [...MODEL_GROUPS.map(g => g.id), 'all'];
-  if (!validGroups.includes(groupId)) return errorResponse(res, `Unknown group: ${groupId}`, 400);
+  const groups = groupId === 'all'
+    ? MODEL_GROUPS
+    : MODEL_GROUPS.filter(g => g.id === groupId);
+  if (groups.length === 0) return errorResponse(res, `Unknown group: ${groupId}`, 400);
   if (activeDownload) return errorResponse(res, 'Download already in progress', 409);
-  if (!existsSync(SCRIPT_PATH)) return errorResponse(res, 'Download script not found', 404);
 
-  const args = [SCRIPT_PATH];
-  if (groupId === 'all') {
-    args.push('--all');
-  } else {
-    const flag = MODEL_GROUPS.find(g => g.id === groupId)?.scriptFlag;
-    if (flag) args.push(flag);
-  }
+  activeDownload = true;
 
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
@@ -455,26 +496,35 @@ function handleDownloadApi(req: IncomingMessage, res: ServerResponse) {
     'Connection': 'keep-alive',
   });
 
-  const proc = spawn('bash', args, {
-    env: { ...process.env, MODELS_DIR },
-    cwd: __dirname,
-  });
-  activeDownload = proc;
-
   const send = (text: string) => {
     try { res.write(`data: ${JSON.stringify({ text })}\n\n`); } catch {}
   };
 
-  proc.stdout.on('data', (c: Buffer) => send(c.toString()));
-  proc.stderr.on('data', (c: Buffer) => send(c.toString()));
+  let exitCode = 0;
+  try {
+    for (const group of groups) {
+      send(`=== ${group.label} ===\n`);
+      for (const file of group.files) {
+        if (existsSync(file.path)) {
+          send(`Already exists: ${file.label}\n`);
+          continue;
+        }
+        send(`Downloading ${file.label} (${file.expectedSize})...\n`);
+        await downloadFile(file.url, file.path, send);
+        send(`\nDownloaded: ${file.label}\n`);
+      }
+    }
+    send(`\nDone. Models directory: ${MODELS_DIR}\n`);
+  } catch (e: any) {
+    send(`\nError: ${e.message}\n`);
+    exitCode = 1;
+  }
 
-  proc.on('close', (code) => {
-    activeDownload = null;
-    try {
-      res.write(`data: ${JSON.stringify({ done: true, code })}\n\n`);
-      res.end();
-    } catch {}
-  });
+  activeDownload = false;
+  try {
+    res.write(`data: ${JSON.stringify({ done: true, code: exitCode })}\n\n`);
+    res.end();
+  } catch {}
 }
 
 // --- Router ---
@@ -508,19 +558,11 @@ async function router(req: IncomingMessage, res: ServerResponse) {
 
 // --- Boot (no model loading — on-demand only) ---
 
-const certPath = path.join(__dirname, 'certs', 'cert.pem');
-const keyPath = path.join(__dirname, 'certs', 'key.pem');
-const useHttps = existsSync(certPath) && existsSync(keyPath);
-
-const server = useHttps
-  ? createHttpsServer({ cert: readFileSync(certPath), key: readFileSync(keyPath) }, router)
-  : createHttpServer(router);
+const server = createServer(router);
 
 server.listen(PORT, '0.0.0.0', () => {
-  const proto = useHttps ? 'https' : 'http';
-  console.log(`node-omni-orcha server on ${proto}://localhost:${PORT}`);
-  console.log(`Status dashboard: ${proto}://localhost:${PORT}/status`);
-  if (useHttps) console.log('HTTPS enabled (self-signed cert — accept the warning on your phone)');
+  console.log(`node-omni-orcha server on http://localhost:${PORT}`);
+  console.log(`Status dashboard: http://localhost:${PORT}/status`);
   console.log('Models load on-demand when you click a tab');
 });
 
